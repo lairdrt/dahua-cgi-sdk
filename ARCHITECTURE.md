@@ -34,6 +34,12 @@ Someone should be productive without reading Dahua documentation.
 8.  Don't design for the feature you might need. Design for the feature you have.
 9.  Every class you don't write is a class you never have to maintain.
 10. Public objects should satisfy their documented invariants immediately after successful construction.
+11. Resources acquired by the SDK should be released by the SDK unless ownership is explicitly transferred to the caller.
+12. The public API should have predictable lifetime semantics.
+
+## Equivalent abstractions should exhibit equivalent behavior.
+
+ When two features represent the same conceptual pattern (such as iterating over recorder-managed resources), they should have the same ownership, lifetime, and cleanup semantics unless there is a compelling reason to differ.
 
 ### Hide implementation details behind an intuitive, stable public API.
 
@@ -97,6 +103,30 @@ We'll wait until the pattern is undeniable. That tends to keep architectures lea
 The architecture should not drift to match the implementation.
 
 ## Layered Architecture
+
+### _Connection
+
+** Responsibility **
+
+Own all communication with the recorder.
+
+** Owns **
+
+requests.Session
+HTTP Digest authentication
+URL construction
+Timeouts
+HTTP request execution
+Exception translation
+
+** Does not own **
+
+Recorder concepts
+Media searches
+Cameras
+Users
+Events
+Parsing recorder responses
 
 ## Public API Philosophy
 

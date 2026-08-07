@@ -18,18 +18,15 @@ Successful construction guarantees that:
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping
 
-import requests
-from requests import Response, Session
-from requests.auth import HTTPDigestAuth
+from requests import Response
 
+from ._connection import _Connection
 from .exceptions import (
-    AuthenticationError,
     InvalidResponseError,
-    RecorderConnectionError,
-    TransportError,
 )
+from .media import MediaService
+from .parsers import parse_cgi_properties
 
 
 class DahuaClient:
@@ -78,7 +75,17 @@ class DahuaClient:
             f"{'https' if self._use_ssl else 'http'}://" f"{self._host}:{self._port}"
         )
 
-        self._session = self._create_session()
+        self._connection = _Connection(
+            host=self._host,
+            port=self._port,
+            username=self._username,
+            password=self._password,
+            timeout=self._timeout,
+        )
+
+        self._media = MediaService(
+            connection=self._connection,
+        )
 
         #
         # Immutable recorder identity.
@@ -150,6 +157,13 @@ class DahuaClient:
         """Recorder processor type."""
         return self._processor
 
+    @property
+    def media(self) -> MediaService:
+        """
+        Recorder media.
+        """
+        return self._media
+
     #
     # ------------------------------------------------------------------
     # Public methods
@@ -158,7 +172,7 @@ class DahuaClient:
 
     def close(self) -> None:
         """Release underlying HTTP resources."""
-        self._session.close()
+        self._connection.close()
 
     def __enter__(self) -> "DahuaClient":
         return self
@@ -198,63 +212,6 @@ class DahuaClient:
         if timeout <= 0:
             raise ValueError("timeout must be greater than zero")
 
-    def _create_session(self) -> Session:
-        """Create and configure the HTTP session."""
-
-        session = requests.Session()
-
-        session.auth = HTTPDigestAuth(
-            self._username,
-            self._password,
-        )
-
-        return session
-
-    def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: Mapping[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> Response:
-        """
-        Send an authenticated HTTP request to the recorder.
-
-        This method is transport-only. It has no knowledge of Dahua CGI
-        semantics and always returns the raw requests.Response object.
-        """
-
-        url = f"{self._base_url}{path}"
-
-        try:
-            response = self._session.request(
-                method=method,
-                url=url,
-                params=params,
-                timeout=self._timeout,
-                **kwargs,
-            )
-        except requests.exceptions.ConnectionError as exc:
-            raise RecorderConnectionError(
-                f"Unable to connect to recorder at {self._host}:{self._port}."
-            ) from exc
-
-        except requests.exceptions.Timeout as exc:
-            raise TransportError(
-                f"Timed out connecting to recorder at {self._host}:{self._port}."
-            ) from exc
-
-        except requests.exceptions.RequestException as exc:
-            raise TransportError(str(exc)) from exc
-
-        if response.status_code == 401:
-            raise AuthenticationError(
-                f"Authentication failed for user '{self._username}'."
-            )
-
-        return response
-
     def _verify_connection(self) -> None:
         """
         Verify connectivity and authentication.
@@ -263,14 +220,12 @@ class DahuaClient:
         reachable, authenticated recorder.
         """
 
-        response = self._request(
-            "GET",
+        response = self._connection.get(
             "/cgi-bin/magicBox.cgi",
             params={
                 "action": "getSystemInfo",
             },
         )
-
         if response.status_code != 200:
             raise InvalidResponseError(
                 f"Unexpected HTTP status code: {response.status_code}"
@@ -286,21 +241,7 @@ class DahuaClient:
         Populate immutable recorder identity from the recorder response.
         """
 
-        values: dict[str, str] = {}
-
-        for line in response.text.splitlines():
-
-            line = line.strip()
-
-            if not line:
-                continue
-
-            if "=" not in line:
-                continue
-
-            key, value = line.split("=", 1)
-
-            values[key.strip()] = value.strip()
+        values = parse_cgi_properties(response.text)
 
         #
         # These keys are intentionally tolerant.

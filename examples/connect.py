@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from dahua_cgi import DahuaClient
 
 
@@ -42,6 +44,14 @@ def main() -> None:
         print(f"Firmware Version:  {client.firmware_version}")
         print(f"API Version:       {client.api_version}")
         print(f"Processor:         {client.processor}")
+
+        print("\nSearching for recordings...\n")
+        for _ in client.media.search(
+            channel=1,
+            start=datetime(2026, 8, 3),
+            end=datetime(2026, 8, 4, 23, 59, 59),
+        ):
+            pass
 
 
 if __name__ == "__main__":
