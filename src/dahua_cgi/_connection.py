@@ -30,6 +30,7 @@ class _Connection:
         username: str,
         password: str,
         timeout: float,
+        use_ssl: bool,
     ) -> None:
 
         self._host = host
@@ -38,7 +39,7 @@ class _Connection:
         self._password = password
         self._timeout = timeout
 
-        self._base_url = f"http://{host}:{port}"
+        self._base_url = f"{'https' if use_ssl else 'http'}://{host}:{port}"
 
         self._session = self._create_session()
 

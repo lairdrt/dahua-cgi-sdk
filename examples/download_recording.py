@@ -34,12 +34,32 @@ def main() -> None:
             start=datetime(2026, 8, 6, 0, 0, 0),
             end=datetime(2026, 8, 7, 23, 59, 59),
         ):
-            print(f"Recording: {recording.start_time} - {recording.end_time}  {recording.video_stream:<10} {recording.length} {recording.file_path}")
+            print(
+                f"Recording: "
+                f"{recording.start_time} - "
+                f"{recording.end_time}  "
+                f"{recording.video_stream:<10} "
+                f"{recording.length} "
+                f"{recording.file_path}"
+            )
             download_this = recording
 
         if download_this is not None:
-            print(f"\nDownloading recording: {download_this.start_time} - {download_this.end_time}  {download_this.video_stream:<10} {download_this.length} {download_this.file_path}")
-            download_path = os.path.join(os.getcwd(), f"{download_this.start_time.strftime('%Y%m%d_%H%M%S')}_{download_this.end_time.strftime('%Y%m%d_%H%M%S')}.dav")
+            start_stamp = download_this.start_time.strftime("%Y%m%d_%H%M%S")
+            end_stamp = download_this.end_time.strftime("%Y%m%d_%H%M%S")
+            download_path = os.path.join(
+                os.getcwd(),
+                f"{start_stamp}_{end_stamp}.dav",
+            )
+
+            print(
+                f"Downloading recording: "
+                f"{download_this.start_time} - "
+                f"{download_this.end_time}  "
+                f"{download_this.video_stream:<10} "
+                f"{download_this.length} "
+                f"{download_this.file_path}"
+            )
             client.media.download(download_this, download_path)
             print(f"Downloaded to: {download_path}")
 

@@ -1,8 +1,7 @@
 """
-Example of connecting to a Dahua device and searching for recordings.
+Example of connecting to a Dahua device.
 """
 import os
-from datetime import datetime
 
 from dahua_cgi import DahuaClient
 
@@ -26,14 +25,6 @@ def main() -> None:
         print(f"Firmware Version:  {client.firmware_version}")
         print(f"API Version:       {client.api_version}")
         print(f"Processor:         {client.processor}")
-
-        print("\nSearching for recordings...\n")
-        for recording in client.media.search(
-            channel=1,
-            start=datetime(2026, 8, 6, 0, 0, 0),
-            end=datetime(2026, 8, 7, 23, 59, 59),
-        ):
-            print(f"Recording: {recording.start_time} - {recording.end_time}  {recording.video_stream:<10} {recording.length} {recording.file_path}")
 
 
 if __name__ == "__main__":

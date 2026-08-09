@@ -81,6 +81,7 @@ class DahuaClient:
             username=self._username,
             password=self._password,
             timeout=self._timeout,
+            use_ssl=self._use_ssl,
         )
 
         self._media = MediaService(
