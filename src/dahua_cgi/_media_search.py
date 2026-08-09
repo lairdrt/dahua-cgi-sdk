@@ -5,6 +5,7 @@ Internal media search implementation.
 from __future__ import annotations
 
 from datetime import datetime
+from types import TracebackType
 from typing import Iterator
 
 from requests import Response
@@ -44,6 +45,7 @@ class _MediaSearch(Iterator[Recording]):
         self._buffer: list[Recording] = []
 
         self._finished = False
+        self._closed = False
 
     def __iter__(self) -> "_MediaSearch":
         return self
@@ -53,32 +55,82 @@ class _MediaSearch(Iterator[Recording]):
         Return the next recording from the search.
         """
 
-        while True:
+        if self._closed:
+            raise StopIteration
 
-            #
-            # Return any buffered recordings first.
-            #
-            if self._buffer:
-                return self._buffer.pop(0)
+        try:
+            while True:
 
-            #
-            # No more data available.
-            #
-            if self._finished:
-                self._close()
-                raise StopIteration
+                #
+                # Return any buffered recordings first.
+                #
+                if self._buffer:
+                    return self._buffer.pop(0)
 
-            #
-            # Lazily initialize the recorder search.
-            #
-            if self._object is None:
-                self._create()
-                self._find()
+                #
+                # No more data available.
+                #
+                if self._finished:
+                    self.close()
+                    raise StopIteration
 
-            #
-            # Refill the buffer.
-            #
-            self._fetch_page()
+                #
+                # Lazily initialize the recorder search.
+                #
+                if self._object is None:
+                    self._create()
+                    self._find()
+
+                #
+                # Refill the buffer.
+                #
+                self._fetch_page()
+
+        except StopIteration:
+            raise
+
+        except Exception:
+            try:
+                self.close()
+            except Exception:
+                pass
+            raise
+
+    def __enter__(self) -> "_MediaSearch":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """
+        Close the recorder search object, if it has been created.
+        """
+
+        if self._closed:
+            return
+
+        self._closed = True
+        self._buffer.clear()
+
+        object_id = self._object
+        self._object = None
+
+        if object_id is None:
+            return
+
+        self._connection.get(
+            "/cgi-bin/mediaFileFind.cgi",
+            params={
+                "action": "close",
+                "object": object_id,
+            },
+        )
 
     def _create(self) -> None:
         """
@@ -163,21 +215,3 @@ class _MediaSearch(Iterator[Recording]):
         #
         if not recordings:
             self._finished = True
-
-    def _close(self) -> None:
-        """
-        Close the recorder search object.
-        """
-
-        if self._object is None:
-            return
-
-        self._connection.get(
-            "/cgi-bin/mediaFileFind.cgi",
-            params={
-                "action": "close",
-                "object": self._object,
-            },
-        )
-
-        self._object = None
