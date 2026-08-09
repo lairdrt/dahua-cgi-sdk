@@ -1,40 +1,19 @@
+import os
 from datetime import datetime
 
 from dahua_cgi import DahuaClient
 
+host = os.environ["DAHUA_HOST"]
+username = os.environ["DAHUA_USERNAME"]
+password = os.environ["DAHUA_PASSWORD"]
 
 def main() -> None:
 
     with DahuaClient(
-        host="192.168.1.34",
-        username="admin",
-        password="Rz!10226$",
+        host=host,
+        username=username,
+        password=password,
     ) as client:
-
-        """
-        # Show raw response
-        response = client._request(
-            "GET",
-            "/cgi-bin/magicBox.cgi",
-            params={"action": "getSystemInfo"},
-        )
-        print(response.text)
-
-        Output:
-        deviceType=31
-        processor=ST7108
-        serialNumber=ND012010178076
-        updateSerial=DHI-NVR5216-16P-4KS2E
-
-        Host:              192.168.1.34
-        Manufacturer:      None
-        Model:             DHI-NVR5216-16P-4KS2E
-        Serial Number:     ND012010178076
-        Hardware Revision: None
-        Firmware Version:  None
-        API Version:       None
-        Processor:         ST7108
-        """
 
         print(f"Host:              {client.host}")
         print(f"Manufacturer:      {client.manufacturer}")
@@ -46,12 +25,12 @@ def main() -> None:
         print(f"Processor:         {client.processor}")
 
         print("\nSearching for recordings...\n")
-        for _ in client.media.search(
+        for recording in client.media.search(
             channel=1,
-            start=datetime(2026, 8, 3),
-            end=datetime(2026, 8, 4, 23, 59, 59),
+            start=datetime(2026, 8, 6, 0, 0, 0),
+            end=datetime(2026, 8, 7, 23, 59, 59),
         ):
-            pass
+            print(f"Recording: {recording.start_time} - {recording.end_time}  {recording.video_stream:<10} {recording.length} {recording.file_path}")
 
 
 if __name__ == "__main__":

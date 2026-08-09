@@ -23,6 +23,7 @@ Logging conventions
 - Minimal constructor validation + recorder verification
 - SDK exceptions → sentence case with punctuation
 - Built-in exceptions → follow the standard library style (lowercase, no period)
+- Modules are named for the domain they own, not the caller that uses them
 
 ## Consistency Over Preference
 

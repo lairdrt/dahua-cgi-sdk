@@ -6,6 +6,10 @@ __pycache__/
 # Virtual environment
 .venv/
 
+# Local connection credentials
+.env
+*.env
+
 # VS Code
 .vscode/
 

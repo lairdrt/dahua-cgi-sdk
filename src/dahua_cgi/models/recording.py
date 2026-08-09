@@ -1,9 +1,3 @@
-"""
-Recording domain object.
-"""
-
-from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -15,21 +9,15 @@ class Recording:
     """
 
     channel: int
+    cluster: int
+    disk: int
+    partition: int
     start_time: datetime
     end_time: datetime
-
     file_path: str
-
-    event: str | None
-
-    stream: str | None
-
-    length: int | None
-
-    size: int | None
-
-    cluster: int | None
-
-    disk: int | None
-
-    partition: int | None
+    type: str
+    video_stream: str
+    events: list[str]
+    flags: list[str]
+    length: int
+    cut_length: int

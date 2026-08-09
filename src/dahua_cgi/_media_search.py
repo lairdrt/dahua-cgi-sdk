@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Iterator
+from urllib import response
 
 from requests import Response
 
@@ -13,6 +14,7 @@ from ._connection import _Connection
 from .exceptions import InvalidResponseError
 from .models import Recording
 from .parsers import parse_cgi_properties
+from .parsers.recording import parse_recordings
 
 
 class _MediaSearch(Iterator[Recording]):
@@ -48,18 +50,36 @@ class _MediaSearch(Iterator[Recording]):
         return self
 
     def __next__(self) -> Recording:
+        """
+        Return the next recording from the search.
+        """
 
-        if self._finished:
-            raise StopIteration
+        while True:
 
-        if self._object is None:
-            self._create()
-            self._find()
+            #
+            # Return any buffered recordings first.
+            #
+            if self._buffer:
+                return self._buffer.pop(0)
+
+            #
+            # No more data available.
+            #
+            if self._finished:
+                self._close()
+                raise StopIteration
+
+            #
+            # Lazily initialize the recorder search.
+            #
+            if self._object is None:
+                self._create()
+                self._find()
+
+            #
+            # Refill the buffer.
+            #
             self._fetch_page()
-
-            self._finished = True
-
-        raise StopIteration
 
     def _create(self) -> None:
         """
@@ -123,12 +143,42 @@ class _MediaSearch(Iterator[Recording]):
         if self._object is None:
             raise RuntimeError("Search object has not been created.")
 
+        response = self._connection.get(
+            "/cgi-bin/mediaFileFind.cgi",
+            params={
+                "action": "findNextFile",
+                "object": self._object,
+                "count": 100,
+            },
+        )
 
-#        response = self._connection.get(
-#            "/cgi-bin/mediaFileFind.cgi",
-#            params={
-#                "action": "findNextFile",
-#                "object": self._object,
-#                "count": 100,
-#            },
-#        )
+        values = parse_cgi_properties(response.text)
+
+        recordings = parse_recordings(values)
+
+        self._buffer.extend(recordings)
+
+        #
+        # If the recorder returned no recordings,
+        # the search is complete.
+        #
+        if not recordings:
+            self._finished = True
+
+    def _close(self) -> None:
+        """
+        Close the recorder search object.
+        """
+
+        if self._object is None:
+            return
+
+        self._connection.get(
+            "/cgi-bin/mediaFileFind.cgi",
+            params={
+                "action": "close",
+                "object": self._object,
+            },
+        )
+
+        self._object = None
