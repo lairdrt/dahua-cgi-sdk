@@ -17,8 +17,6 @@ Successful construction guarantees that:
 
 from __future__ import annotations
 
-import logging
-
 from requests import Response
 
 from ._connection import _Connection
@@ -68,8 +66,6 @@ class DahuaClient:
         self._use_ssl = use_ssl
         self._port = port if port is not None else (443 if use_ssl else 80)
         self._timeout = timeout
-
-        self._logger = logging.getLogger(__name__)
 
         self._base_url = (
             f"{'https' if self._use_ssl else 'http'}://" f"{self._host}:{self._port}"

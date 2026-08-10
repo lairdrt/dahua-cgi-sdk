@@ -56,21 +56,6 @@ class _Connection:
             params=params,
         )
 
-    def post(
-        self,
-        path: str,
-        *,
-        params: Mapping[str, Any] | None = None,
-        data: Mapping[str, Any] | None = None,
-    ) -> Response:
-
-        return self.request(
-            "POST",
-            path,
-            params=params,
-            data=data,
-        )
-
     def request(
         self,
         method: str,

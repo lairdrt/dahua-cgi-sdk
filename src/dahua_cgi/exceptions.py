@@ -26,7 +26,3 @@ class RecorderConnectionError(TransportError):
 
 class InvalidResponseError(DahuaError):
     """Raised when the recorder returns an unexpected response."""
-
-
-class RecorderError(DahuaError):
-    """Raised when the recorder reports an operational error."""
