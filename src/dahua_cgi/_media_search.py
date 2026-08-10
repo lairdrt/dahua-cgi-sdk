@@ -124,13 +124,16 @@ class _MediaSearch(Iterator[Recording]):
         if object_id is None:
             return
 
-        self._connection.get(
-            "/cgi-bin/mediaFileFind.cgi",
-            params={
-                "action": "close",
-                "object": object_id,
-            },
-        )
+        try:
+            self._connection.get(
+                "/cgi-bin/mediaFileFind.cgi",
+                params={
+                    "action": "close",
+                    "object": object_id,
+                },
+            )
+        except Exception:
+            pass
 
     def _create(self) -> None:
         """
@@ -144,7 +147,17 @@ class _MediaSearch(Iterator[Recording]):
             },
         )
 
+        self._require_success(response)
         self._object = self._parse_object(response)
+
+    @staticmethod
+    def _require_success(response: Response) -> None:
+        """Raise when a CGI operation returns an unexpected HTTP status."""
+
+        if response.status_code != 200:
+            raise InvalidResponseError(
+                f"Unexpected HTTP status code: {response.status_code}"
+            )
 
     @staticmethod
     def _parse_object(response: Response) -> int:
@@ -175,7 +188,7 @@ class _MediaSearch(Iterator[Recording]):
         if self._object is None:
             raise RuntimeError("Search object has not been created.")
 
-        self._connection.get(
+        response = self._connection.get(
             "/cgi-bin/mediaFileFind.cgi",
             params={
                 "action": "findFile",
@@ -185,6 +198,8 @@ class _MediaSearch(Iterator[Recording]):
                 "condition.EndTime": self._end.strftime("%Y-%m-%d %H:%M:%S"),
             },
         )
+
+        self._require_success(response)
 
     def _fetch_page(self) -> None:
         """
@@ -203,6 +218,7 @@ class _MediaSearch(Iterator[Recording]):
             },
         )
 
+        self._require_success(response)
         values = parse_cgi_properties(response.text)
 
         recordings = parse_recordings(values)

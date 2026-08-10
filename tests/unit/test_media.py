@@ -102,6 +102,44 @@ class MediaSearchLifecycleTests(TestCase):
             next(search)
         self.assertEqual(self.connection.get.call_count, 5)
 
+    def test_factory_create_requires_successful_http_response(self) -> None:
+        self.connection.get.return_value = _response(status_code=400)
+
+        with self.assertRaisesRegex(InvalidResponseError, "400"):
+            next(self.search())
+
+    def test_find_file_requires_successful_http_response(self) -> None:
+        self.connection.get.side_effect = [
+            _response("result=7"),
+            _response(status_code=400),
+            _response(),
+        ]
+
+        with self.assertRaisesRegex(InvalidResponseError, "400"):
+            next(self.search())
+
+    def test_find_next_file_requires_successful_http_response(self) -> None:
+        self.connection.get.side_effect = [
+            _response("result=7"),
+            _response(),
+            _response(status_code=400),
+            _response(),
+        ]
+
+        with self.assertRaisesRegex(InvalidResponseError, "400"):
+            next(self.search())
+
+    def test_close_failure_does_not_mask_iteration_error(self) -> None:
+        self.connection.get.side_effect = [
+            _response("result=7"),
+            _response(),
+            _response("items[0].Channel=1"),
+            RuntimeError("close failed"),
+        ]
+
+        with self.assertRaises(InvalidResponseError):
+            next(self.search())
+
     def test_explicit_close_closes_active_search_only_once(self) -> None:
         self.connection.get.side_effect = [
             _response("result=7"),
@@ -210,8 +248,8 @@ def _recording(*, file_path: str = "mnt/dvr/recording.dav") -> Recording:
     )
 
 
-def _response(text: str = "") -> Mock:
-    return Mock(text=text)
+def _response(text: str = "", *, status_code: int = 200) -> Mock:
+    return Mock(text=text, status_code=status_code)
 
 
 def _recording_response() -> str:
