@@ -28,6 +28,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.pytest.ini_options]
+addopts = ["-p", "no:cacheprovider"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 

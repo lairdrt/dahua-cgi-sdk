@@ -89,7 +89,15 @@ class MediaSearchLifecycleTests(TestCase):
         ]
         search = self.search()
 
-        self.assertEqual(list(search), [_recording()])
+        self.assertEqual(
+            list(search),
+            [
+                _recording(
+                    events=("MotionDetect",),
+                    flags=("Timing",),
+                )
+            ],
+        )
 
         self.assertEqual(
             self.connection.get.call_args_list[-1],
@@ -230,7 +238,12 @@ class MediaSearchLifecycleTests(TestCase):
         )
 
 
-def _recording(*, file_path: str = "mnt/dvr/recording.dav") -> Recording:
+def _recording(
+    *,
+    events: tuple[str, ...] = (),
+    file_path: str = "mnt/dvr/recording.dav",
+    flags: tuple[str, ...] = (),
+) -> Recording:
     return Recording(
         channel=1,
         cluster=0,
@@ -241,8 +254,8 @@ def _recording(*, file_path: str = "mnt/dvr/recording.dav") -> Recording:
         file_path=file_path,
         type="dav",
         video_stream="Main",
-        events=[],
-        flags=[],
+        events=events,
+        flags=flags,
         length=1,
         cut_length=1,
     )
@@ -260,7 +273,9 @@ def _recording_response() -> str:
             "items[0].CutLength=1",
             "items[0].Disk=0",
             "items[0].EndTime=2026-08-06 07:15:45",
+            "items[0].Events[0]=MotionDetect",
             "items[0].FilePath=mnt/dvr/recording.dav",
+            "items[0].Flags[0]=Timing",
             "items[0].Length=1",
             "items[0].Partition=0",
             "items[0].StartTime=2026-08-06 07:14:13",

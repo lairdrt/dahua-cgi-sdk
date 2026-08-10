@@ -100,7 +100,7 @@ def _parse_datetime(
 def _parse_string_list(
     values: Mapping[str, str],
     prefix: str,
-) -> list[str]:
+) -> tuple[str, ...]:
     """
     Parse a Dahua indexed string list.
 
@@ -130,4 +130,4 @@ def _parse_string_list(
 
         index += 1
 
-    return result
+    return tuple(result)

@@ -17,7 +17,7 @@ class Recording:
     file_path: str
     type: str
     video_stream: str
-    events: list[str]
-    flags: list[str]
+    events: tuple[str, ...]
+    flags: tuple[str, ...]
     length: int
     cut_length: int
