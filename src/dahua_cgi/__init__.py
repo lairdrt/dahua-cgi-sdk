@@ -3,9 +3,11 @@ Python SDK for Dahua-compatible Network Video Recorders.
 """
 
 from .client import DahuaClient
-from .models import Recording
+from .models import Camera, Recording, StreamProfile
 
 __all__ = [
+    "Camera",
     "DahuaClient",
     "Recording",
+    "StreamProfile",
 ]

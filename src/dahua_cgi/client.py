@@ -20,6 +20,7 @@ from __future__ import annotations
 from requests import Response
 
 from ._connection import _Connection
+from .cameras import CameraService
 from .exceptions import (
     InvalidResponseError,
 )
@@ -81,6 +82,9 @@ class DahuaClient:
         )
 
         self._media = MediaService(
+            connection=self._connection,
+        )
+        self._cameras = CameraService(
             connection=self._connection,
         )
 
@@ -160,6 +164,12 @@ class DahuaClient:
         Recorder media.
         """
         return self._media
+
+    @property
+    def cameras(self) -> CameraService:
+        """Recorder cameras."""
+
+        return self._cameras
 
     #
     # ------------------------------------------------------------------

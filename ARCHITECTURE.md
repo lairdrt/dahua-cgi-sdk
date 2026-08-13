@@ -36,6 +36,7 @@ Someone should be productive without reading Dahua documentation.
 10. Public objects should satisfy their documented invariants immediately after successful construction.
 11. Resources acquired by the SDK should be released by the SDK unless ownership is explicitly transferred to the caller.
 12. The public API should have predictable lifetime semantics.
+13. The public SDK must never inadvertently expose recorder-stored camera credentials through camera discovery APIs.
 
 ## Equivalent abstractions should exhibit equivalent behavior.
 
@@ -101,6 +102,14 @@ We'll wait until the pattern is undeniable. That tends to keep architectures lea
 ### Implementation must conform to the architecture.
 
 The architecture should not drift to match the implementation.
+
+### Public camera channels should be 1-based.
+
+That gives us a clean rule:
+
+Public SDK channel:      1..N
+Dahua config index:      channel - 1
+Operational CGI channel: channel
 
 ## Layered Architecture
 

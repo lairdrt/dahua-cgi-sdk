@@ -23,6 +23,9 @@ client.camera_count
 ```
 
 ### Cameras
+
+Public camera channels are 1-based, e.g., the first camera stream is channel=1.
+
 ```
 client.cameras
 client.cameras.all()
