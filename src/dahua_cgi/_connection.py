@@ -63,6 +63,7 @@ class _Connection:
         *,
         params: Mapping[str, Any] | None = None,
         data: Mapping[str, Any] | None = None,
+        json: Any | None = None,
     ) -> Response:
         """
         Send an authenticated request to the recorder.
@@ -76,6 +77,7 @@ class _Connection:
                 url=url,
                 params=params,
                 data=data,
+                json=json,
                 timeout=self._timeout,
             )
 

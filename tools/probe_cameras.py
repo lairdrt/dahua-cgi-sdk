@@ -80,14 +80,14 @@ def main() -> None:
 # GET /cgi-bin/configManager.cgi?action=getConfig&name=RemoteDeviceInfo : FAILS 400
 # GET /cgi-bin/configManager.cgi?action=getConfig&name=CameraInfo : FAILS 400
 
-        request_text = "/cgi-bin/LogicDeviceManager.cgi"
+        request_text = "/cgi-bin/api/LogicDeviceManager"
         print(request_text)
 
         response = client._connection.request(
-            "GET",
-            "/cgi-bin/LogicDeviceManager.cgi",
-            params={
-                "action": "getCameraAll",
+            "POST",
+            "/cgi-bin/api/LogicDeviceManager/getCameraState",
+            json={
+                "uniqueChannels": [-1],
             },
         )
 
