@@ -19,12 +19,17 @@ class CameraService:
     def list(self) -> tuple[Camera, ...]:
         """Return all 1-based camera channels exposed by the recorder.
 
-        Channels are enumerated from ``ChannelTitle``. Their presence does not
-        indicate that a physical camera is configured or currently connected.
+        Channels are enumerated from ``getCameraAll``. Configuration state does
+        not indicate that a physical camera is currently connected.
         """
 
-        response = self._get_config("ChannelTitle")
-        return parse_cameras(response.text)
+        inventory = self._connection.get(
+            "/cgi-bin/LogicDeviceManager.cgi",
+            params={"action": "getCameraAll"},
+        )
+        self._require_success(inventory)
+        channel_titles = self._get_config("ChannelTitle")
+        return parse_cameras(inventory.text, channel_titles.text)
 
     def get(self, channel: int) -> Camera:
         """Return the recorder-exposed slot for a 1-based camera channel."""
@@ -81,12 +86,16 @@ class CameraService:
             params={"action": "getConfig", "name": name},
         )
 
+        self._require_success(response)
+
+        return response
+
+    @staticmethod
+    def _require_success(response: Response) -> None:
         if response.status_code != 200:
             raise InvalidResponseError(
                 f"Unexpected HTTP status code: {response.status_code}"
             )
-
-        return response
 
     @staticmethod
     def _validate_channel(channel: int) -> None:

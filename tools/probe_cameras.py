@@ -80,15 +80,14 @@ def main() -> None:
 # GET /cgi-bin/configManager.cgi?action=getConfig&name=RemoteDeviceInfo : FAILS 400
 # GET /cgi-bin/configManager.cgi?action=getConfig&name=CameraInfo : FAILS 400
 
-        request_text = "/cgi-bin/IntervideoManager.cgi"
+        request_text = "/cgi-bin/LogicDeviceManager.cgi"
         print(request_text)
 
         response = client._connection.request(
             "GET",
-            "/cgi-bin/IntervideoManager.cgi",
+            "/cgi-bin/LogicDeviceManager.cgi",
             params={
-                "action": "getVersion",
-                "Name": "CGI",
+                "action": "getCameraAll",
             },
         )
 
@@ -110,7 +109,7 @@ def main() -> None:
 
             print("Body:")
             print("-" * 80)
-            print(response.text[:2000])
+            print(response.text)
 
         else:
 

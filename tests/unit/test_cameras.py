@@ -1,6 +1,6 @@
 from dataclasses import FrozenInstanceError
 from unittest import TestCase
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from dahua_cgi.cameras import CameraService
 from dahua_cgi.client import DahuaClient
@@ -14,45 +14,82 @@ class CameraServiceTests(TestCase):
         self.service = CameraService(self.connection)
 
     def test_list_returns_all_exposed_slots_as_1_based_channels(self) -> None:
-        self.connection.get.return_value = _response(
-            "\n".join(
-                [
-                    "table.ChannelTitle[0].Name=Front Door",
-                    "table.ChannelTitle[3].Name=Driveway",
-                ]
-            )
+        self.connection.get.side_effect = (
+            _response(_camera_inventory()),
+            _response(_channel_titles()),
         )
 
         self.assertEqual(
             self.service.list(),
             (
-                Camera(channel=1, name="Front Door"),
-                Camera(channel=4, name="Driveway"),
+                Camera(
+                    channel=1,
+                    name="Front Door",
+                    configured=True,
+                    address="10.0.0.21",
+                    device_type="IPC-HDW3849H-AS-PV",
+                    serial_number="8J0123456789",
+                    mac_address="aa:bb:cc:dd:ee:01",
+                    protocol="Private",
+                ),
+                Camera(
+                    channel=11,
+                    name="Camera 11",
+                    configured=False,
+                    address=None,
+                    device_type=None,
+                    serial_number=None,
+                    mac_address=None,
+                    protocol=None,
+                ),
             ),
         )
-        self.connection.get.assert_called_once_with(
-            "/cgi-bin/configManager.cgi",
-            params={"action": "getConfig", "name": "ChannelTitle"},
+        self.assertEqual(
+            self.connection.get.call_args_list,
+            [
+                call(
+                    "/cgi-bin/LogicDeviceManager.cgi",
+                    params={"action": "getCameraAll"},
+                ),
+                call(
+                    "/cgi-bin/configManager.cgi",
+                    params={"action": "getConfig", "name": "ChannelTitle"},
+                ),
+            ],
         )
 
     def test_get_maps_channel_to_exact_config_index(self) -> None:
-        self.connection.get.return_value = _response(
-            "\n".join(
-                [
-                    "table.ChannelTitle[0].Name=Front Door",
-                    "table.ChannelTitle[1].Name=Back Door",
-                ]
-            )
+        self.connection.get.side_effect = (
+            _response(_camera_inventory(second_channel=1)),
+            _response(_channel_titles(second_channel=1, second_name="Back Door")),
         )
 
         self.assertEqual(
             self.service.get(2),
-            Camera(channel=2, name="Back Door"),
+            Camera(
+                channel=2,
+                name="Back Door",
+                configured=False,
+                address=None,
+                device_type=None,
+                serial_number=None,
+                mac_address=None,
+                protocol=None,
+            ),
         )
 
     def test_get_does_not_return_adjacent_camera(self) -> None:
-        self.connection.get.return_value = _response(
-            "table.ChannelTitle[1].Name=Back Door"
+        self.connection.get.side_effect = (
+            _response(
+                "\n".join(
+                    [
+                        "camera[0].Enable=false",
+                        "camera[0].Type=Remote",
+                        "camera[0].UniqueChannel=1",
+                    ]
+                )
+            ),
+            _response("table.ChannelTitle[1].Name=Back Door"),
         )
 
         with self.assertRaisesRegex(InvalidResponseError, "channel 1"):
@@ -147,7 +184,16 @@ class CameraServiceTests(TestCase):
         self.connection.get.assert_not_called()
 
     def test_models_are_immutable(self) -> None:
-        camera = Camera(channel=1, name="Front Door")
+        camera = Camera(
+            channel=1,
+            name="Front Door",
+            configured=True,
+            address=None,
+            device_type=None,
+            serial_number=None,
+            mac_address=None,
+            protocol=None,
+        )
         profile = StreamProfile(
             kind="main",
             codec="H.265",
@@ -170,6 +216,20 @@ class CameraServiceTests(TestCase):
 
         with self.assertRaisesRegex(InvalidResponseError, "400"):
             self.service.list()
+
+    def test_inventory_does_not_expose_credentials(self) -> None:
+        self.connection.get.side_effect = (
+            _response(
+                _camera_inventory()
+                + "\ncamera[0].UserName=admin\ncamera[0].Password=secret"
+            ),
+            _response(_channel_titles()),
+        )
+
+        camera = self.service.list()[0]
+
+        self.assertNotIn("username", camera.__slots__)
+        self.assertNotIn("password", camera.__slots__)
 
 
 class DahuaClientCameraServiceTests(TestCase):
@@ -218,5 +278,42 @@ def _encode_response(*, config_index: int) -> str:
             f"{sub}.Video.FPS=29.97",
             f"{sub}.Video.Height=480",
             f"{sub}.Video.Width=704",
+        ]
+    )
+
+
+def _channel_titles(*, second_channel: int = 10, second_name: str = "Camera 11") -> str:
+    return "\n".join(
+        [
+            "table.ChannelTitle[0].Name=Front Door",
+            f"table.ChannelTitle[{second_channel}].Name={second_name}",
+        ]
+    )
+
+
+def _camera_inventory(*, second_channel: int = 10) -> str:
+    return "\n".join(
+        [
+            "camera[0].Address=10.0.0.21",
+            "camera[0].DeviceInfo.DeviceType=IPC-HDW3849H-AS-PV",
+            "camera[0].DeviceInfo.Enable=true",
+            "camera[0].DeviceInfo.Mac=aa:bb:cc:dd:ee:01",
+            "camera[0].DeviceInfo.SerialNo=8J0123456789",
+            "camera[0].DeviceInfo.VideoInputs[0].Enable=true",
+            "camera[0].Enable=true",
+            "camera[0].Protocol=Private",
+            "camera[0].Type=Remote",
+            "camera[0].UniqueChannel=0",
+            "camera[1].Address=192.168.0.0",
+            "camera[1].DeviceInfo.Enable=false",
+            "camera[1].DeviceInfo.Mac=ff:ff:ff:ff:ff:ff",
+            "camera[1].DeviceInfo.VideoInputs[0].Enable=true",
+            "camera[1].Enable=false",
+            "camera[1].Protocol=Private",
+            "camera[1].Type=Remote",
+            f"camera[1].UniqueChannel={second_channel}",
+            "camera[2].Enable=true",
+            "camera[2].Type=Compose",
+            "camera[2].UniqueChannel=49",
         ]
     )
