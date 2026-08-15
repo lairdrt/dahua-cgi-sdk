@@ -6,7 +6,7 @@ Calls are based upon documentation found in the DAHUA HTTP API FOR IPC Version 3
 
 import os
 
-from dahua_cgi import DahuaClient
+from dahua_rpc import DahuaClient
 
 
 def print_response(response):

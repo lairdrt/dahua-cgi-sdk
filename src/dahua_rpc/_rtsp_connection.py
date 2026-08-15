@@ -465,7 +465,7 @@ def _build_request(
     lines = [
         f"{method} {target} RTSP/1.0",
         f"CSeq: {cseq}",
-        "User-Agent: dahua-cgi-sdk/rtsp-playback",
+        "User-Agent: dahua-rpc-sdk/rtsp-playback",
     ]
     lines.extend(f"{name}: {value}" for name, value in headers)
     if authorization is not None:

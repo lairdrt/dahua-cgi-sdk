@@ -3,8 +3,8 @@ from unittest.mock import Mock
 
 import requests
 
-from dahua_cgi._rpc_connection import _RpcConnection
-from dahua_cgi.exceptions import (
+from dahua_rpc._rpc_connection import _RpcConnection
+from dahua_rpc.exceptions import (
     AuthenticationError,
     InvalidResponseError,
     RecorderConnectionError,

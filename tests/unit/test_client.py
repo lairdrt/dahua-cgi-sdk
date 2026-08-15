@@ -1,12 +1,12 @@
 from unittest import TestCase
 from unittest.mock import Mock, call, patch
 
-from dahua_cgi.client import DahuaClient
-from dahua_cgi.exceptions import InvalidResponseError
+from dahua_rpc.client import DahuaClient
+from dahua_rpc.exceptions import InvalidResponseError
 
 
 class DahuaClientRpcIntegrationTests(TestCase):
-    @patch("dahua_cgi.client._RpcConnection")
+    @patch("dahua_rpc.client._RpcConnection")
     def test_client_owns_lazy_rpc_connection_and_closes_it(
         self, rpc_type: Mock
     ) -> None:
@@ -49,7 +49,7 @@ class DahuaClientRpcIntegrationTests(TestCase):
 
         rpc_type.return_value.close.assert_called_once_with()
 
-    @patch("dahua_cgi.client._RpcConnection")
+    @patch("dahua_rpc.client._RpcConnection")
     def test_malformed_rpc_identity_is_rejected(
         self, rpc_type: Mock
     ) -> None:
@@ -57,7 +57,7 @@ class DahuaClientRpcIntegrationTests(TestCase):
         with self.assertRaisesRegex(InvalidResponseError, "valid params"):
             DahuaClient(host="recorder.example", username="admin", password="x")
 
-    @patch("dahua_cgi.client._RpcConnection")
+    @patch("dahua_rpc.client._RpcConnection")
     def test_missing_model_is_rejected_without_cgi_fallback(
         self, rpc_type: Mock
     ) -> None:
@@ -67,8 +67,8 @@ class DahuaClientRpcIntegrationTests(TestCase):
         with self.assertRaisesRegex(InvalidResponseError, "determine recorder model"):
             DahuaClient(host="recorder.example", username="admin", password="x")
 
-    @patch("dahua_cgi.client._RtspConnection")
-    @patch("dahua_cgi.client._RpcConnection")
+    @patch("dahua_rpc.client._RtspConnection")
+    @patch("dahua_rpc.client._RpcConnection")
     def test_client_owns_and_closes_created_playbacks(
         self, rpc_type: Mock, rtsp_type: Mock
     ) -> None:
@@ -96,8 +96,8 @@ class DahuaClientRpcIntegrationTests(TestCase):
         rtsp_type.return_value.close_socket.assert_called_once_with()
         self.assertNotIn(playback, client._playbacks)
 
-    @patch("dahua_cgi.client._RtspConnection")
-    @patch("dahua_cgi.client._RpcConnection")
+    @patch("dahua_rpc.client._RtspConnection")
+    @patch("dahua_rpc.client._RpcConnection")
     def test_client_owns_and_closes_created_live_streams(
         self, rpc_type: Mock, rtsp_type: Mock
     ) -> None:

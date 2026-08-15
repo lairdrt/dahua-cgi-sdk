@@ -2,10 +2,10 @@ from dataclasses import FrozenInstanceError
 from unittest import TestCase
 from unittest.mock import Mock, call, patch
 
-from dahua_cgi.cameras import CameraService
-from dahua_cgi.client import DahuaClient
-from dahua_cgi.exceptions import InvalidResponseError
-from dahua_cgi.models import Camera, StreamProfile
+from dahua_rpc.cameras import CameraService
+from dahua_rpc.client import DahuaClient
+from dahua_rpc.exceptions import InvalidResponseError
+from dahua_rpc.models import Camera, StreamProfile
 
 
 class CameraServiceTests(TestCase):
@@ -137,7 +137,7 @@ class CameraServiceTests(TestCase):
 
 
 class DahuaClientCameraServiceTests(TestCase):
-    @patch("dahua_cgi.client._RpcConnection")
+    @patch("dahua_rpc.client._RpcConnection")
     def test_client_gives_camera_service_rpc_connection(self, rpc_type: Mock) -> None:
         rpc_type.return_value.call.side_effect = [
             {"params": {"updateSerial": "NVR"}},

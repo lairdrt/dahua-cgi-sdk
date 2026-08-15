@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from dahua_cgi import DahuaClient
+from dahua_rpc import DahuaClient
 
 host = os.environ["DAHUA_HOST"]
 username = os.environ["DAHUA_USERNAME"]

@@ -3,11 +3,11 @@ from datetime import datetime
 from unittest import TestCase
 from unittest.mock import Mock, call
 
-from dahua_cgi.exceptions import InvalidResponseError
-from dahua_cgi.media import MediaService
-from dahua_cgi.models import Recording, Snapshot
-from dahua_cgi.parsers.recording import parse_rpc_recordings
-from dahua_cgi.parsers.snapshot import parse_rpc_snapshots
+from dahua_rpc.exceptions import InvalidResponseError
+from dahua_rpc.media import MediaService
+from dahua_rpc.models import Recording, Snapshot
+from dahua_rpc.parsers.recording import parse_rpc_recordings
+from dahua_rpc.parsers.snapshot import parse_rpc_snapshots
 
 
 class RecordingBytesTests(TestCase):

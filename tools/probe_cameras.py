@@ -7,7 +7,7 @@ download protocol. It is intentionally verbose.
 
 import os
 
-from dahua_cgi import DahuaClient
+from dahua_rpc import DahuaClient
 
 
 def main() -> None:

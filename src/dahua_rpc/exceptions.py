@@ -1,5 +1,5 @@
 """
-Exception hierarchy for the Dahua CGI SDK.
+Exception hierarchy for the Dahua RPC SDK.
 
 Applications using this SDK should catch DahuaError (or one of its
 subclasses) rather than exceptions raised by third-party libraries.

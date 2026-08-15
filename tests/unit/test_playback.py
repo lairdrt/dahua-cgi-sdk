@@ -3,16 +3,16 @@ from datetime import datetime
 from unittest import TestCase
 from unittest.mock import Mock
 
-from dahua_cgi._rtsp_connection import _MediaReceipt, _RtspConnection
-from dahua_cgi.exceptions import (
+from dahua_rpc._rtsp_connection import _MediaReceipt, _RtspConnection
+from dahua_rpc.exceptions import (
     AuthenticationError,
     InvalidResponseError,
     PlaybackStateError,
     RecorderConnectionError,
     TransportError,
 )
-from dahua_cgi.models import Recording
-from dahua_cgi.playback import RecordingPlayback, RtpReceipt
+from dahua_rpc.models import Recording
+from dahua_rpc.playback import RecordingPlayback, RtpReceipt
 
 
 class RtspLifecycleTests(TestCase):

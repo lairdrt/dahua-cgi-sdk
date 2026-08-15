@@ -1,6 +1,6 @@
 from unittest import TestCase
 
-from dahua_cgi.exceptions import DahuaError, InvalidResponseError, TransportError
+from dahua_rpc.exceptions import DahuaError, InvalidResponseError, TransportError
 
 
 class InvalidResponseErrorTests(TestCase):

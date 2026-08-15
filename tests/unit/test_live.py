@@ -2,12 +2,12 @@ import socket
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
-from dahua_cgi._rtsp_connection import _MediaReceipt, _RtspConnection
-from dahua_cgi.cameras import CameraService
-from dahua_cgi.exceptions import InvalidResponseError, PlaybackStateError
-from dahua_cgi.live import LiveStream
-from dahua_cgi.models import Camera, StreamProfile
-from dahua_cgi.playback import RtpReceipt
+from dahua_rpc._rtsp_connection import _MediaReceipt, _RtspConnection
+from dahua_rpc.cameras import CameraService
+from dahua_rpc.exceptions import InvalidResponseError, PlaybackStateError
+from dahua_rpc.live import LiveStream
+from dahua_rpc.models import Camera, StreamProfile
+from dahua_rpc.playback import RtpReceipt
 
 
 class CameraLiveStreamSelectionTests(TestCase):
