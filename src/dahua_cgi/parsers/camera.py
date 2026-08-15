@@ -1,152 +1,183 @@
-"""Parsers for Dahua camera configuration responses."""
+"""Parsers for Dahua RPC camera responses."""
 
 from __future__ import annotations
 
-import re
-from typing import Literal
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal
 
 from ..exceptions import InvalidResponseError
 from ..models import Camera, StreamProfile
-from .cgi import parse_cgi_properties
-
-_CHANNEL_TITLE_PATTERN = re.compile(r"^table\.ChannelTitle\[(\d+)]\.Name$")
-_CAMERA_PROPERTY_PATTERN = re.compile(r"^camera\[(\d+)]\.(.+)$")
 
 
-def parse_cameras(inventory_text: str, channel_titles_text: str) -> tuple[Camera, ...]:
-    """Parse a key=value camera inventory into public camera models."""
+def parse_cameras(
+    inventory: Any, channel_titles: Any, states: Any
+) -> tuple[Camera, ...]:
+    """Combine RPC inventory, titles, and state into public camera models."""
 
-    titles = {
-        _response_to_public_channel(int(match.group(1))): value
-        for key, value in parse_cgi_properties(channel_titles_text).items()
-        if (match := _CHANNEL_TITLE_PATTERN.fullmatch(key)) is not None
-    }
-    entries: dict[int, dict[str, str]] = {}
-    for key, value in parse_cgi_properties(inventory_text).items():
-        match = _CAMERA_PROPERTY_PATTERN.fullmatch(key)
-        if match is not None:
-            entries.setdefault(int(match.group(1)), {})[match.group(2)] = value
-
+    titles = _parse_titles(_sequence(channel_titles, "channel titles"))
+    connected = _parse_states(_sequence(states, "camera states"))
     cameras = []
-    for entry in entries.values():
-        if entry.get("Type", "").casefold() == "compose":
+    for value in _sequence(inventory, "camera inventory"):
+        entry = _mapping(value, "camera inventory entry")
+        entry_type = entry.get("Type")
+        if not isinstance(entry_type, str):
+            raise InvalidResponseError("Camera inventory entry has an invalid Type.")
+        if entry_type.casefold() == "compose":
             continue
-
-        try:
-            response_channel = int(entry["UniqueChannel"])
-        except (KeyError, ValueError) as exc:
+        response_channel = entry.get("UniqueChannel")
+        if not _is_int(response_channel):
             raise InvalidResponseError(
                 "Camera inventory entry has an invalid UniqueChannel."
-            ) from exc
-
-        configured = _parse_boolean(entry.get("Enable"), property_name="Enable")
+            )
+        configured = entry.get("Enable")
+        if not isinstance(configured, bool):
+            raise InvalidResponseError("Camera inventory entry has an invalid Enable.")
+        device = _mapping(entry.get("DeviceInfo"), "camera DeviceInfo")
         channel = _response_to_public_channel(response_channel)
         cameras.append(
             Camera(
                 channel=channel,
                 name=titles.get(channel, ""),
                 configured=configured,
-                address=_metadata(entry, "Address", configured=configured),
-                device_type=_metadata(
-                    entry, "DeviceInfo.DeviceType", configured=configured
-                ),
-                serial_number=_metadata(
-                    entry, "DeviceInfo.SerialNo", configured=configured
-                ),
-                mac_address=_metadata(entry, "DeviceInfo.Mac", configured=configured),
-                protocol=_metadata(entry, "Protocol", configured=configured),
+                connected=connected.get(channel, False),
+                address=_metadata(device, "Address", configured),
+                device_type=_metadata(device, "DeviceType", configured),
+                serial_number=_metadata(device, "SerialNo", configured),
+                mac_address=_metadata(device, "Mac", configured),
+                protocol=_metadata(device, "ProtocolType", configured),
             )
         )
-
     return tuple(sorted(cameras, key=lambda camera: camera.channel))
 
 
-def parse_stream_profiles(text: str, *, channel: int) -> tuple[StreamProfile, ...]:
-    """Parse the normal main stream and first substream for ``channel``."""
-
-    values = parse_cgi_properties(text)
-    config_index = _public_to_response_channel(channel)
-    profiles = [
-        _parse_stream_profile(
-            values,
-            prefix=f"table.Encode[{config_index}].MainFormat[0]",
-            kind="main",
+def parse_stream_profiles(table: Any, *, channel: int) -> tuple[StreamProfile, ...]:
+    entries = _sequence(table, "Encode configuration")
+    try:
+        encode = _mapping(
+            entries[_public_to_response_channel(channel)], "Encode channel"
         )
-    ]
-
-    sub_prefix = f"table.Encode[{config_index}].ExtraFormat[0]"
-    if any(key.startswith(f"{sub_prefix}.") for key in values):
-        profiles.append(_parse_stream_profile(values, prefix=sub_prefix, kind="sub"))
-
+    except IndexError as exc:
+        raise InvalidResponseError(
+            f"Encode configuration did not include camera channel {channel}."
+        ) from exc
+    main = _sequence(encode.get("MainFormat"), "MainFormat")
+    if not main:
+        raise InvalidResponseError("MainFormat did not include a stream profile.")
+    profiles = [_parse_stream(main[0], "main")]
+    if encode.get("ExtraFormat") is not None:
+        extra = _sequence(encode["ExtraFormat"], "ExtraFormat")
+        if extra:
+            profiles.append(_parse_stream(extra[0], "sub"))
     return tuple(profiles)
 
 
-def _parse_stream_profile(
-    values: dict[str, str],
-    *,
-    prefix: str,
-    kind: Literal["main", "sub"],
-) -> StreamProfile:
-    def required(name: str) -> str:
-        key = f"{prefix}.{name}"
-        try:
-            return values[key]
-        except KeyError as exc:
-            raise InvalidResponseError(
-                f"Missing required stream property: {key}."
-            ) from exc
+def _parse_titles(entries: Sequence[Any]) -> dict[int, str]:
+    titles = {}
+    for index, value in enumerate(entries):
+        name = _mapping(value, "channel title").get("Name")
+        if not isinstance(name, str):
+            raise InvalidResponseError("Channel title entry has an invalid Name.")
+        titles[_response_to_public_channel(index)] = name
+    return titles
 
-    try:
-        width = int(required("Video.Width"))
-        height = int(required("Video.Height"))
-        fps = float(required("Video.FPS"))
-        bitrate = int(required("Video.BitRate"))
-    except ValueError as exc:
-        raise InvalidResponseError(
-            f"Invalid numeric stream property for {prefix}."
-        ) from exc
 
-    audio_enabled_value = required("AudioEnable").lower()
-    if audio_enabled_value not in {"true", "false"}:
-        raise InvalidResponseError(f"Invalid audio enable value for {prefix}.")
+def _parse_states(entries: Sequence[Any]) -> dict[int, bool]:
+    states = {}
+    for value in entries:
+        entry = _mapping(value, "camera state")
+        channel = entry.get("channel")
+        if not _is_int(channel):
+            raise InvalidResponseError("Camera state has an invalid channel.")
+        state = entry.get("connectionState")
+        if state is not None and not isinstance(state, str):
+            raise InvalidResponseError("Camera state has an invalid connectionState.")
+        states[_response_to_public_channel(channel)] = state == "Connected"
+    return states
 
-    audio_enabled = audio_enabled_value == "true"
 
+def _parse_stream(value: Any, kind: Literal["main", "sub"]) -> StreamProfile:
+    profile = _mapping(value, f"{kind} stream profile")
+    video = _mapping(profile.get("Video"), f"{kind} stream Video")
+    audio = profile.get("Audio")
+    audio_values = _mapping(audio, f"{kind} stream Audio") if audio is not None else {}
     return StreamProfile(
         kind=kind,
-        codec=required("Video.Compression"),
-        width=width,
-        height=height,
-        fps=fps,
-        bitrate=bitrate,
-        bitrate_control=required("Video.BitRateControl"),
-        audio_enabled=audio_enabled,
-        audio_codec=values.get(f"{prefix}.Audio.Compression"),
+        codec=_string(video, "Compression"),
+        width=_integer(video, "Width"),
+        height=_integer(video, "Height"),
+        fps=_number(video, "FPS"),
+        bitrate=_integer(video, "BitRate"),
+        bitrate_control=_string(video, "BitRateControl"),
+        audio_enabled=_boolean(profile, "AudioEnable"),
+        audio_codec=_optional_string(audio_values, "Compression"),
     )
 
 
 def _response_to_public_channel(channel: int) -> int:
-    """Convert a zero-based response channel to a public/request channel."""
-
     return channel + 1
 
 
 def _public_to_response_channel(channel: int) -> int:
-    """Convert a public/request channel to a zero-based response channel."""
-
     return channel - 1
 
 
-def _parse_boolean(value: str | None, *, property_name: str) -> bool:
-    if value is None or value.casefold() not in {"true", "false"}:
-        raise InvalidResponseError(f"Invalid camera inventory {property_name} value.")
-    return value.casefold() == "true"
+def _mapping(value: Any, name: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise InvalidResponseError(f"RPC response has an invalid {name}.")
+    return value
 
 
-def _metadata(
-    entry: dict[str, str], property_name: str, *, configured: bool
-) -> str | None:
+def _sequence(value: Any, name: str) -> Sequence[Any]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise InvalidResponseError(f"RPC response has an invalid {name}.")
+    return value
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _string(values: Mapping[str, Any], name: str) -> str:
+    value = values.get(name)
+    if not isinstance(value, str):
+        raise InvalidResponseError(f"Stream profile has an invalid {name}.")
+    return value
+
+
+def _optional_string(values: Mapping[str, Any], name: str) -> str | None:
+    value = values.get(name)
+    if value is not None and not isinstance(value, str):
+        raise InvalidResponseError(f"Stream profile has an invalid {name}.")
+    return value
+
+
+def _integer(values: Mapping[str, Any], name: str) -> int:
+    value = values.get(name)
+    if not _is_int(value):
+        raise InvalidResponseError(f"Stream profile has an invalid {name}.")
+    return value
+
+
+def _number(values: Mapping[str, Any], name: str) -> float:
+    value = values.get(name)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise InvalidResponseError(f"Stream profile has an invalid {name}.")
+    return float(value)
+
+
+def _boolean(values: Mapping[str, Any], name: str) -> bool:
+    value = values.get(name)
+    if not isinstance(value, bool):
+        raise InvalidResponseError(f"Stream profile has an invalid {name}.")
+    return value
+
+
+def _metadata(values: Mapping[str, Any], name: str, configured: bool) -> str | None:
     if not configured:
         return None
-    value = entry.get(property_name, "").strip()
-    return value or None
+    value = values.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise InvalidResponseError(f"Camera metadata has an invalid {name}.")
+    return value.strip() or None

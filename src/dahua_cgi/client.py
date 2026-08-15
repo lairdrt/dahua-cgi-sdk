@@ -1,9 +1,7 @@
 """
 Core Dahua client.
 
-This module implements the foundation of the SDK. It is intentionally
-independent of any specific CGI endpoint beyond the minimal connection
-verification performed during construction.
+This module implements the foundation of the SDK.
 
 A DahuaClient instance represents a verified connection to a
 single Dahua-compatible recorder.
@@ -17,7 +15,8 @@ Successful construction guarantees that:
 
 from __future__ import annotations
 
-from requests import Response
+from collections.abc import Mapping
+from typing import Any
 
 from ._connection import _Connection
 from ._rpc_connection import _RpcConnection
@@ -26,7 +25,6 @@ from .exceptions import (
     InvalidResponseError,
 )
 from .media import MediaService
-from .parsers import parse_cgi_properties
 
 
 class DahuaClient:
@@ -94,7 +92,8 @@ class DahuaClient:
             connection=self._rpc_connection,
         )
         self._cameras = CameraService(
-            connection=self._connection,
+            connection=self._rpc_connection,
+            snapshot_connection=self._connection,
         )
 
         #
@@ -107,6 +106,7 @@ class DahuaClient:
         self._hardware_revision: str | None = None
         self._firmware_version: str | None = None
         self._api_version: str | None = None
+        self._processor: str | None = None
 
         self._verify_connection()
 
@@ -239,59 +239,68 @@ class DahuaClient:
         reachable, authenticated recorder.
         """
 
-        response = self._connection.get(
-            "/cgi-bin/magicBox.cgi",
-            params={
-                "action": "getSystemInfo",
-            },
+        system_info = self._rpc_params(
+            self._rpc_connection.call("magicBox.getSystemInfo"),
+            method="magicBox.getSystemInfo",
         )
-        if response.status_code != 200:
+        software = self._rpc_params(
+            self._rpc_connection.call("magicBox.getSoftwareVersion"),
+            method="magicBox.getSoftwareVersion",
+        )
+        hardware = self._rpc_params(
+            self._rpc_connection.call("magicBox.getHardwareVersion"),
+            method="magicBox.getHardwareVersion",
+        )
+        software_version = software.get("version")
+        if not isinstance(software_version, Mapping):
             raise InvalidResponseError(
-                f"Unexpected HTTP status code: {response.status_code}"
+                "magicBox.getSoftwareVersion returned an invalid version."
             )
 
-        #
-        # Identity parsing will be implemented next.
-        #
-        self._load_identity(response)
-
-    def _load_identity(self, response: Response) -> None:
-        """
-        Populate immutable recorder identity from the recorder response.
-        """
-
-        values = parse_cgi_properties(response.text)
-
-        #
-        # These keys are intentionally tolerant.
-        # Different firmware revisions expose slightly different names.
-        #
-        self._manufacturer = values.get("manufacturer") or values.get("Manufacturer")
-
+        self._manufacturer = self._optional_string(
+            system_info, "manufacturer", "Manufacturer"
+        )
         self._model = (
-            values.get("model")
-            or values.get("Model")
-            or values.get("updateSerial")
-            or values.get("deviceType")
-            or values.get("DeviceType")
+            self._optional_string(system_info, "model", "Model")
+            or self._optional_string(system_info, "updateSerial")
+            or self._optional_string(system_info, "deviceType", "DeviceType")
         )
-
-        self._serial_number = values.get("serialNumber") or values.get("SerialNumber")
-
-        self._hardware_revision = values.get("hardwareVersion") or values.get(
-            "HardwareVersion"
+        self._serial_number = self._optional_string(
+            system_info, "serialNumber", "SerialNumber"
         )
-
-        self._firmware_version = values.get("version") or values.get("Version")
-
-        self._api_version = values.get("webVersion") or values.get("WebVersion")
-
-        self._processor = values.get("processor") or values.get("Processor")
-
-        #
-        # Verify we learned enough to identify the recorder.
-        #
+        self._hardware_revision = self._optional_string(hardware, "version")
+        self._firmware_version = self._optional_string(
+            software_version, "Version", "version"
+        )
+        self._api_version = self._optional_string(
+            software_version, "WebVersion", "webVersion"
+        )
+        self._processor = self._optional_string(
+            system_info, "processor", "Processor"
+        )
         if self._model is None:
             raise InvalidResponseError(
                 "Unable to determine recorder model from system information."
             )
+
+    @staticmethod
+    def _rpc_params(response: Any, *, method: str) -> Mapping[str, Any]:
+        params = response.get("params") if isinstance(response, Mapping) else None
+        if not isinstance(params, Mapping):
+            raise InvalidResponseError(f"{method} response omitted valid params.")
+        return params
+
+    @staticmethod
+    def _optional_string(
+        values: Mapping[str, Any], *names: str
+    ) -> str | None:
+        for name in names:
+            value = values.get(name)
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                raise InvalidResponseError(
+                    f"Recorder identity field {name} was not a string."
+                )
+            return value or None
+        return None

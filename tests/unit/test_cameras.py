@@ -10,15 +10,12 @@ from dahua_cgi.models import Camera, StreamProfile
 
 class CameraServiceTests(TestCase):
     def setUp(self) -> None:
-        self.connection = Mock()
-        self.service = CameraService(self.connection)
+        self.rpc = Mock()
+        self.cgi = Mock()
+        self.service = CameraService(self.rpc, snapshot_connection=self.cgi)
 
-    def test_list_returns_all_exposed_slots_as_1_based_channels(self) -> None:
-        self.connection.get.side_effect = (
-            _response(_camera_inventory()),
-            _response(_channel_titles()),
-        )
-
+    def test_list_combines_rpc_inventory_titles_and_states(self) -> None:
+        self.rpc.call.side_effect = _list_responses()
         self.assertEqual(
             self.service.list(),
             (
@@ -26,6 +23,7 @@ class CameraServiceTests(TestCase):
                     channel=1,
                     name="Front Door",
                     configured=True,
+                    connected=True,
                     address="10.0.0.21",
                     device_type="IPC-HDW3849H-AS-PV",
                     serial_number="8J0123456789",
@@ -36,6 +34,7 @@ class CameraServiceTests(TestCase):
                     channel=11,
                     name="Camera 11",
                     configured=False,
+                    connected=False,
                     address=None,
                     device_type=None,
                     serial_number=None,
@@ -45,210 +44,144 @@ class CameraServiceTests(TestCase):
             ),
         )
         self.assertEqual(
-            self.connection.get.call_args_list,
+            self.rpc.call.call_args_list,
             [
+                call("LogicDeviceManager.getCameraAll"),
+                call("configManager.getConfig", {"name": "ChannelTitle"}),
                 call(
-                    "/cgi-bin/LogicDeviceManager.cgi",
-                    params={"action": "getCameraAll"},
-                ),
-                call(
-                    "/cgi-bin/configManager.cgi",
-                    params={"action": "getConfig", "name": "ChannelTitle"},
+                    "LogicDeviceManager.getCameraState",
+                    {"uniqueChannels": [-1]},
                 ),
             ],
         )
+        self.cgi.get.assert_not_called()
 
-    def test_get_maps_channel_to_exact_config_index(self) -> None:
-        self.connection.get.side_effect = (
-            _response(_camera_inventory(second_channel=1)),
-            _response(_channel_titles(second_channel=1, second_name="Back Door")),
-        )
-
+    def test_state_connected_non_connected_missing_and_absent(self) -> None:
+        inventory = [_camera(0), _camera(1), _camera(2), _camera(3)]
+        states = [
+            {"channel": 0, "connectionState": "Connected"},
+            {"channel": 1, "connectionState": "Disconnected"},
+            {"channel": 2},
+        ]
+        self.rpc.call.side_effect = _list_responses(inventory=inventory, states=states)
         self.assertEqual(
-            self.service.get(2),
-            Camera(
-                channel=2,
-                name="Back Door",
-                configured=False,
-                address=None,
-                device_type=None,
-                serial_number=None,
-                mac_address=None,
-                protocol=None,
-            ),
+            [camera.connected for camera in self.service.list()],
+            [True, False, False, False],
         )
 
-    def test_get_does_not_return_adjacent_camera(self) -> None:
-        self.connection.get.side_effect = (
-            _response(
-                "\n".join(
-                    [
-                        "camera[0].Enable=false",
-                        "camera[0].Type=Remote",
-                        "camera[0].UniqueChannel=1",
-                    ]
-                )
-            ),
-            _response("table.ChannelTitle[1].Name=Back Door"),
-        )
+    def test_get_matches_list_and_preserves_validation(self) -> None:
+        self.rpc.call.side_effect = _list_responses(second_channel=1)
+        self.assertEqual(self.service.get(2).channel, 2)
+        self.rpc.reset_mock()
+        with self.assertRaisesRegex(ValueError, "at least 1"):
+            self.service.get(0)
+        self.rpc.call.assert_not_called()
 
-        with self.assertRaisesRegex(InvalidResponseError, "channel 1"):
-            self.service.get(1)
+    def test_get_rejects_missing_channel(self) -> None:
+        self.rpc.call.side_effect = _list_responses(second_channel=1)
+        with self.assertRaisesRegex(InvalidResponseError, "channel 3"):
+            self.service.get(3)
 
-    def test_streams_parse_main_and_first_substream(self) -> None:
-        self.connection.get.return_value = _response(_encode_response(config_index=0))
-
+    def test_streams_uses_rpc_encode_and_channel_minus_one(self) -> None:
+        self.rpc.call.return_value = {"params": {"table": [{}, {}, _encode()]}}
         self.assertEqual(
-            self.service.streams(1),
+            self.service.streams(3),
             (
                 StreamProfile(
-                    kind="main",
-                    codec="H.265",
-                    width=3840,
-                    height=2160,
-                    fps=15.0,
-                    bitrate=8192,
-                    bitrate_control="VBR",
-                    audio_enabled=True,
-                    audio_codec="G.711A",
+                    kind="main", codec="H.265", width=3840, height=2160,
+                    fps=15.0, bitrate=8192, bitrate_control="VBR",
+                    audio_enabled=True, audio_codec="G.711A",
                 ),
                 StreamProfile(
-                    kind="sub",
-                    codec="H.264",
-                    width=704,
-                    height=480,
-                    fps=29.97,
-                    bitrate=512,
-                    bitrate_control="CBR",
-                    audio_enabled=False,
-                    audio_codec="G.711A",
+                    kind="sub", codec="H.264", width=704, height=480,
+                    fps=29.97, bitrate=512, bitrate_control="CBR",
+                    audio_enabled=False, audio_codec="G.711A",
                 ),
             ),
         )
-        self.connection.get.assert_called_once_with(
-            "/cgi-bin/configManager.cgi",
-            params={"action": "getConfig", "name": "Encode"},
+        self.rpc.call.assert_called_once_with(
+            "configManager.getConfig", {"name": "Encode"}
         )
+        self.cgi.get.assert_not_called()
 
-    def test_streams_use_channel_minus_one_as_config_index(self) -> None:
-        self.connection.get.return_value = _response(_encode_response(config_index=2))
-
-        profiles = self.service.streams(3)
-
-        self.assertEqual(profiles[0].width, 3840)
-
-    def test_snapshot_returns_jpeg_bytes(self) -> None:
+    def test_snapshot_is_the_only_camera_cgi_operation(self) -> None:
         jpeg = b"\xff\xd8camera image\xff\xd9"
-        self.connection.get.return_value = _response(
-            content=jpeg,
-            headers={"Content-Type": "image/jpeg; charset=binary"},
+        self.cgi.get.return_value = _response(
+            content=jpeg, headers={"Content-Type": "image/jpeg; charset=binary"}
         )
-
         self.assertEqual(self.service.snapshot(2), jpeg)
-        self.connection.get.assert_called_once_with(
-            "/cgi-bin/snapshot.cgi",
-            params={"channel": 2},
+        self.cgi.get.assert_called_once_with(
+            "/cgi-bin/snapshot.cgi", params={"channel": 2}
         )
+        self.rpc.call.assert_not_called()
 
-    def test_snapshot_rejects_non_200_response(self) -> None:
-        self.connection.get.return_value = _response(status_code=500)
-
-        with self.assertRaisesRegex(InvalidResponseError, "500"):
-            self.service.snapshot(1)
-
-    def test_snapshot_rejects_wrong_content_type(self) -> None:
-        self.connection.get.return_value = _response(
-            content=b"\xff\xd8camera image\xff\xd9",
-            headers={"Content-Type": "text/plain"},
+    def test_snapshot_rejects_bad_responses(self) -> None:
+        bad = (
+            (_response(status_code=500), "500"),
+            (
+                _response(content=b"x", headers={"Content-Type": "text/plain"}),
+                "content type",
+            ),
+            (
+                _response(content=b"x", headers={"Content-Type": "image/jpeg"}),
+                "malformed JPEG",
+            ),
         )
+        for response, message in bad:
+            with self.subTest(message=message):
+                self.cgi.get.return_value = response
+                with self.assertRaisesRegex(InvalidResponseError, message):
+                    self.service.snapshot(1)
 
-        with self.assertRaisesRegex(InvalidResponseError, "content type"):
-            self.service.snapshot(1)
-
-    def test_snapshot_rejects_malformed_jpeg(self) -> None:
-        self.connection.get.return_value = _response(
-            content=b"not a jpeg",
-            headers={"Content-Type": "image/jpeg"},
+    def test_malformed_rpc_responses_raise_sdk_errors(self) -> None:
+        malformed = (
+            {},
+            {"params": {"camera": "bad"}},
+            {"params": {"camera": [{"Type": "Remote"}]}},
         )
+        for response in malformed:
+            with self.subTest(response=response):
+                self.rpc.call.side_effect = [response, *_list_responses()[1:]]
+                with self.assertRaises(InvalidResponseError):
+                    self.service.list()
 
-        with self.assertRaisesRegex(InvalidResponseError, "malformed JPEG"):
-            self.service.snapshot(1)
-
-    def test_operations_reject_channel_zero_without_requesting(self) -> None:
-        operations = (self.service.get, self.service.streams, self.service.snapshot)
-        for operation in operations:
-            with self.subTest(operation=operation.__name__):
-                with self.assertRaisesRegex(ValueError, "at least 1"):
-                    operation(0)
-
-        self.connection.get.assert_not_called()
-
-    def test_models_are_immutable(self) -> None:
-        camera = Camera(
-            channel=1,
-            name="Front Door",
-            configured=True,
-            address=None,
-            device_type=None,
-            serial_number=None,
-            mac_address=None,
-            protocol=None,
-        )
-        profile = StreamProfile(
-            kind="main",
-            codec="H.265",
-            width=3840,
-            height=2160,
-            fps=15.0,
-            bitrate=8192,
-            bitrate_control="VBR",
-            audio_enabled=True,
-            audio_codec="G.711A",
-        )
-
-        with self.assertRaises(FrozenInstanceError):
-            camera.name = "Changed"
-        with self.assertRaises(FrozenInstanceError):
-            profile.codec = "H.264"
-
-    def test_config_request_requires_http_200(self) -> None:
-        self.connection.get.return_value = _response(status_code=400)
-
-        with self.assertRaisesRegex(InvalidResponseError, "400"):
+    def test_rpc_failures_propagate(self) -> None:
+        self.rpc.call.side_effect = InvalidResponseError("RPC rejected")
+        with self.assertRaisesRegex(InvalidResponseError, "RPC rejected"):
             self.service.list()
 
     def test_inventory_does_not_expose_credentials(self) -> None:
-        self.connection.get.side_effect = (
-            _response(
-                _camera_inventory()
-                + "\ncamera[0].UserName=admin\ncamera[0].Password=secret"
-            ),
-            _response(_channel_titles()),
-        )
-
+        inventory = [_camera(0) | {"UserName": "admin", "Password": "secret"}]
+        self.rpc.call.side_effect = _list_responses(inventory=inventory)
         camera = self.service.list()[0]
-
         self.assertNotIn("username", camera.__slots__)
         self.assertNotIn("password", camera.__slots__)
+        self.assertNotIn("secret", repr(camera))
+
+    def test_models_are_immutable(self) -> None:
+        self.rpc.call.side_effect = _list_responses()
+        camera = self.service.list()[0]
+        with self.assertRaises(FrozenInstanceError):
+            camera.name = "Changed"
 
 
 class DahuaClientCameraServiceTests(TestCase):
+    @patch("dahua_cgi.client._RpcConnection")
     @patch("dahua_cgi.client._Connection")
-    def test_client_exposes_camera_service(self, connection_type: Mock) -> None:
-        connection_type.return_value.get.return_value = _response("deviceType=NVR")
-
+    def test_client_gives_camera_service_both_existing_connections(
+        self, connection_type: Mock, rpc_type: Mock
+    ) -> None:
+        rpc_type.return_value.call.side_effect = [
+            {"params": {"updateSerial": "NVR"}},
+            {"params": {"version": {}}},
+            {"params": {}},
+        ]
         client = DahuaClient(host="recorder.example", username="admin", password="x")
+        self.assertIs(client.cameras._connection, rpc_type.return_value)
+        self.assertIs(client.cameras._snapshot_connection, connection_type.return_value)
 
-        self.assertIsInstance(client.cameras, CameraService)
 
-
-def _response(
-    text: str = "",
-    *,
-    status_code: int = 200,
-    content: bytes = b"",
-    headers: dict[str, str] | None = None,
-) -> Mock:
+def _response(text="", *, status_code=200, content=b"", headers=None) -> Mock:
     return Mock(
         text=text,
         status_code=status_code,
@@ -257,63 +190,56 @@ def _response(
     )
 
 
-def _encode_response(*, config_index: int) -> str:
-    main = f"table.Encode[{config_index}].MainFormat[0]"
-    sub = f"table.Encode[{config_index}].ExtraFormat[0]"
-    return "\n".join(
-        [
-            f"{main}.Audio.Compression=G.711A",
-            f"{main}.AudioEnable=true",
-            f"{main}.Video.BitRate=8192",
-            f"{main}.Video.BitRateControl=VBR",
-            f"{main}.Video.Compression=H.265",
-            f"{main}.Video.FPS=15",
-            f"{main}.Video.Height=2160",
-            f"{main}.Video.Width=3840",
-            f"{sub}.Audio.Compression=G.711A",
-            f"{sub}.AudioEnable=false",
-            f"{sub}.Video.BitRate=512",
-            f"{sub}.Video.BitRateControl=CBR",
-            f"{sub}.Video.Compression=H.264",
-            f"{sub}.Video.FPS=29.97",
-            f"{sub}.Video.Height=480",
-            f"{sub}.Video.Width=704",
-        ]
+def _camera(channel: int, *, configured: bool = True) -> dict:
+    return {
+        "Enable": configured,
+        "Type": "Remote",
+        "UniqueChannel": channel,
+        "DeviceInfo": {
+            "Address": "10.0.0.21",
+            "DeviceType": "IPC-HDW3849H-AS-PV",
+            "SerialNo": "8J0123456789",
+            "Mac": "aa:bb:cc:dd:ee:01",
+            "ProtocolType": "Private",
+        },
+    }
+
+
+def _list_responses(*, inventory=None, states=None, second_channel=10) -> list[dict]:
+    inventory = inventory or [
+        _camera(0),
+        _camera(second_channel, configured=False),
+        {"Enable": True, "Type": "Compose", "UniqueChannel": 49},
+    ]
+    title_count = (
+        max((item.get("UniqueChannel", 0) for item in inventory), default=0) + 1
     )
+    titles = [{"Name": f"Camera {index + 1}"} for index in range(title_count)]
+    titles[0] = {"Name": "Front Door"}
+    states = states if states is not None else [
+        {"channel": 0, "connectionState": "Connected"},
+        {"channel": second_channel},
+    ]
+    return [
+        {"params": {"camera": inventory}},
+        {"params": {"table": titles}},
+        {"params": {"states": states}},
+    ]
 
 
-def _channel_titles(*, second_channel: int = 10, second_name: str = "Camera 11") -> str:
-    return "\n".join(
-        [
-            "table.ChannelTitle[0].Name=Front Door",
-            f"table.ChannelTitle[{second_channel}].Name={second_name}",
-        ]
-    )
+def _encode() -> dict:
+    return {
+        "MainFormat": [_profile("H.265", 3840, 2160, 15, 8192, "VBR", True)],
+        "ExtraFormat": [_profile("H.264", 704, 480, 29.97, 512, "CBR", False)],
+    }
 
 
-def _camera_inventory(*, second_channel: int = 10) -> str:
-    return "\n".join(
-        [
-            "camera[0].Address=10.0.0.21",
-            "camera[0].DeviceInfo.DeviceType=IPC-HDW3849H-AS-PV",
-            "camera[0].DeviceInfo.Enable=true",
-            "camera[0].DeviceInfo.Mac=aa:bb:cc:dd:ee:01",
-            "camera[0].DeviceInfo.SerialNo=8J0123456789",
-            "camera[0].DeviceInfo.VideoInputs[0].Enable=true",
-            "camera[0].Enable=true",
-            "camera[0].Protocol=Private",
-            "camera[0].Type=Remote",
-            "camera[0].UniqueChannel=0",
-            "camera[1].Address=192.168.0.0",
-            "camera[1].DeviceInfo.Enable=false",
-            "camera[1].DeviceInfo.Mac=ff:ff:ff:ff:ff:ff",
-            "camera[1].DeviceInfo.VideoInputs[0].Enable=true",
-            "camera[1].Enable=false",
-            "camera[1].Protocol=Private",
-            "camera[1].Type=Remote",
-            f"camera[1].UniqueChannel={second_channel}",
-            "camera[2].Enable=true",
-            "camera[2].Type=Compose",
-            "camera[2].UniqueChannel=49",
-        ]
-    )
+def _profile(codec, width, height, fps, bitrate, control, audio) -> dict:
+    return {
+        "Audio": {"Compression": "G.711A"},
+        "AudioEnable": audio,
+        "Video": {
+            "Compression": codec, "Width": width, "Height": height,
+            "FPS": fps, "BitRate": bitrate, "BitRateControl": control,
+        },
+    }

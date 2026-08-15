@@ -13,11 +13,11 @@ class ConnectionUrlTests(TestCase):
         connection._session = session = Mock()
         session.request.return_value = Mock(status_code=200)
 
-        connection.get("/cgi-bin/magicBox.cgi")
+        connection.get("/cgi-bin/snapshot.cgi")
 
         session.request.assert_called_once_with(
             method="GET",
-            url="http://recorder.example:8080/cgi-bin/magicBox.cgi",
+            url="http://recorder.example:8080/cgi-bin/snapshot.cgi",
             params=None,
             data=None,
             json=None,
@@ -29,11 +29,11 @@ class ConnectionUrlTests(TestCase):
         connection._session = session = Mock()
         session.request.return_value = Mock(status_code=200)
 
-        connection.get("/cgi-bin/magicBox.cgi")
+        connection.get("/cgi-bin/snapshot.cgi")
 
         session.request.assert_called_once_with(
             method="GET",
-            url="https://recorder.example:8443/cgi-bin/magicBox.cgi",
+            url="https://recorder.example:8443/cgi-bin/snapshot.cgi",
             params=None,
             data=None,
             json=None,

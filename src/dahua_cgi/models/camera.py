@@ -13,6 +13,7 @@ class Camera:
     channel: int
     name: str
     configured: bool
+    connected: bool
     address: str | None
     device_type: str | None
     serial_number: str | None
