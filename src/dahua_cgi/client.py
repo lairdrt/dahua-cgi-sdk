@@ -24,8 +24,9 @@ from .cameras import CameraService
 from .exceptions import (
     InvalidResponseError,
 )
+from .live import LiveStream, LiveStreamName
 from .media import MediaService
-from .models import Recording
+from .models import Recording, StreamProfile
 from .playback import RecordingPlayback
 
 
@@ -83,12 +84,14 @@ class DahuaClient:
         )
 
         self._playbacks: set[RecordingPlayback] = set()
+        self._live_streams: set[LiveStream] = set()
         self._media = MediaService(
             connection=self._rpc_connection,
             playback_factory=self._create_playback,
         )
         self._cameras = CameraService(
             connection=self._rpc_connection,
+            live_stream_factory=self._create_live_stream,
         )
 
         #
@@ -186,6 +189,11 @@ class DahuaClient:
         for playback in tuple(self._playbacks):
             try:
                 playback.close()
+            except Exception:
+                pass
+        for live_stream in tuple(self._live_streams):
+            try:
+                live_stream.close()
             except Exception:
                 pass
         self._rpc_connection.close()
@@ -318,3 +326,30 @@ class DahuaClient:
         )
         self._playbacks.add(playback)
         return playback
+
+    def _create_live_stream(
+        self,
+        channel: int,
+        stream: LiveStreamName,
+        subtype: int,
+        profile: StreamProfile,
+    ) -> LiveStream:
+        target_path = f"/cam/realmonitor?channel={channel}&subtype={subtype}"
+        connection = _RtspConnection(
+            host=self._host,
+            port=554,
+            username=self._username,
+            password=self._password,
+            timeout=self._timeout,
+            target_path=target_path,
+            initial_range=None,
+        )
+        live_stream = LiveStream(
+            connection,
+            channel=channel,
+            stream=stream,
+            profile=profile,
+            on_close=self._live_streams.discard,
+        )
+        self._live_streams.add(live_stream)
+        return live_stream

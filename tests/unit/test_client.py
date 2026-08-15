@@ -96,6 +96,36 @@ class DahuaClientRpcIntegrationTests(TestCase):
         rtsp_type.return_value.close_socket.assert_called_once_with()
         self.assertNotIn(playback, client._playbacks)
 
+    @patch("dahua_cgi.client._RtspConnection")
+    @patch("dahua_cgi.client._RpcConnection")
+    def test_client_owns_and_closes_created_live_streams(
+        self, rpc_type: Mock, rtsp_type: Mock
+    ) -> None:
+        rpc_type.return_value.call.side_effect = _identity_responses()
+        client = DahuaClient(
+            host="recorder.example",
+            username="admin",
+            password="password",
+            timeout=5.0,
+        )
+        profile = Mock()
+
+        live_stream = client._create_live_stream(1, "Main", 0, profile)
+
+        rtsp_type.assert_called_once_with(
+            host="recorder.example",
+            port=554,
+            username="admin",
+            password="password",
+            timeout=5.0,
+            target_path="/cam/realmonitor?channel=1&subtype=0",
+            initial_range=None,
+        )
+        self.assertIn(live_stream, client._live_streams)
+        client.close()
+        rtsp_type.return_value.close_socket.assert_called_once_with()
+        self.assertNotIn(live_stream, client._live_streams)
+
 
 def _identity_responses() -> list[dict]:
     return [

@@ -13,6 +13,7 @@ Recorder (DahuaClient)
 |
 |--- Camera (0..N)
 |     |--- Stream
+|     |--- LiveStream (RTSP)
 |     |--- PTZ
 |
 |--- Recording (queried via Media)

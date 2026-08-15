@@ -56,6 +56,11 @@ camera.reboot()
 
 Notice that the stream belongs to the camera.
 
+`client.cameras.live_stream(channel=1, stream="Main")` creates a live RTSP
+video session. `Main` maps to Dahua subtype 0 and `Extra1` maps to subtype 1
+when that RPC2 Encode profile exists. Live sessions support `start()`,
+`receive(duration)`, and `close()`/context-manager cleanup.
+
 ### Media
 
 `client.media.recordings(...)` returns indexed stored `Recording` objects.
@@ -73,6 +78,10 @@ NPT `position`, synchronous RTP observation with `receive(duration)`, and
 RPC2 performs media indexing and search. `RPC_Loadfile` explicitly exports
 indexed DAV and JPG files. RTSP performs recorded playback directly from the
 recording metadata; `recording_bytes()` is not part of playback.
+
+Camera inventory, state, and stream metadata remain RPC2-backed. Live camera
+video and recorded playback share the RTSP/Digest/TCP-interleaved transport.
+`RPC_Loadfile` is restricted to explicit indexed-file export.
 
 ### Storage
 

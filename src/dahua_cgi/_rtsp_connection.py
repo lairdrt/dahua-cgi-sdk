@@ -1,4 +1,4 @@
-"""Internal synchronous RTSP transport for recorded media playback."""
+"""Internal synchronous RTSP transport for live and recorded video."""
 
 from __future__ import annotations
 
@@ -190,7 +190,7 @@ class _DigestState:
 
 
 class _RtspConnection:
-    """Own one file-specific RTSP connection and streaming session."""
+    """Own one RTSP connection and TCP-interleaved video session."""
 
     def __init__(
         self,
@@ -200,16 +200,22 @@ class _RtspConnection:
         username: str,
         password: str,
         timeout: float,
-        file_path: str,
+        file_path: str | None = None,
+        target_path: str | None = None,
+        initial_range: str | None = "npt=0-",
         connector: Callable[..., socket.socket] = socket.create_connection,
     ) -> None:
+        if (file_path is None) == (target_path is None):
+            raise ValueError("exactly one of file_path or target_path is required")
         self._host = host
         self._port = port
         self._username = username
         self._password = password
         self._timeout = timeout
         self._connector = connector
-        self.target = f"rtsp://{host}:{port}/{file_path}"
+        path = f"/{file_path}" if file_path is not None else target_path
+        self.target = f"rtsp://{host}:{port}{path}"
+        self._initial_range = initial_range
         self._socket: socket.socket | None = None
         self._stream: _RtspStream | None = None
         self._digest: _DigestState | None = None
@@ -257,7 +263,12 @@ class _RtspConnection:
             if not session:
                 raise InvalidResponseError("SETUP omitted a usable RTSP Session.")
             self.session = session
-            play = self._session_request("PLAY", (("Range", "npt=0-"),))
+            play_headers = (
+                (("Range", self._initial_range),)
+                if self._initial_range is not None
+                else ()
+            )
+            play = self._session_request("PLAY", play_headers)
             self._require_ok("PLAY", play)
             self.returned_range = play.header("Range")
         except Exception:
