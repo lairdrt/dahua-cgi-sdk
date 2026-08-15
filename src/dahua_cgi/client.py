@@ -19,11 +19,14 @@ from collections.abc import Mapping
 from typing import Any
 
 from ._rpc_connection import _RpcConnection
+from ._rtsp_connection import _RtspConnection
 from .cameras import CameraService
 from .exceptions import (
     InvalidResponseError,
 )
 from .media import MediaService
+from .models import Recording
+from .playback import RecordingPlayback
 
 
 class DahuaClient:
@@ -79,8 +82,10 @@ class DahuaClient:
             use_ssl=self._use_ssl,
         )
 
+        self._playbacks: set[RecordingPlayback] = set()
         self._media = MediaService(
             connection=self._rpc_connection,
+            playback_factory=self._create_playback,
         )
         self._cameras = CameraService(
             connection=self._rpc_connection,
@@ -178,6 +183,11 @@ class DahuaClient:
 
     def close(self) -> None:
         """Release underlying HTTP resources."""
+        for playback in tuple(self._playbacks):
+            try:
+                playback.close()
+            except Exception:
+                pass
         self._rpc_connection.close()
 
     def __enter__(self) -> "DahuaClient":
@@ -291,3 +301,20 @@ class DahuaClient:
                 )
             return value or None
         return None
+
+    def _create_playback(self, recording: Recording) -> RecordingPlayback:
+        connection = _RtspConnection(
+            host=self._host,
+            port=554,
+            username=self._username,
+            password=self._password,
+            timeout=self._timeout,
+            file_path=recording.file_path,
+        )
+        playback = RecordingPlayback(
+            connection,
+            recording,
+            on_close=self._playbacks.discard,
+        )
+        self._playbacks.add(playback)
+        return playback

@@ -67,6 +67,35 @@ class DahuaClientRpcIntegrationTests(TestCase):
         with self.assertRaisesRegex(InvalidResponseError, "determine recorder model"):
             DahuaClient(host="recorder.example", username="admin", password="x")
 
+    @patch("dahua_cgi.client._RtspConnection")
+    @patch("dahua_cgi.client._RpcConnection")
+    def test_client_owns_and_closes_created_playbacks(
+        self, rpc_type: Mock, rtsp_type: Mock
+    ) -> None:
+        rpc_type.return_value.call.side_effect = _identity_responses()
+        client = DahuaClient(
+            host="recorder.example",
+            username="admin",
+            password="password",
+            timeout=5.0,
+        )
+        recording = Mock(file_path="/mnt/dvr/recording.dav")
+
+        playback = client.media.playback(recording)
+
+        rtsp_type.assert_called_once_with(
+            host="recorder.example",
+            port=554,
+            username="admin",
+            password="password",
+            timeout=5.0,
+            file_path="/mnt/dvr/recording.dav",
+        )
+        self.assertIn(playback, client._playbacks)
+        client.close()
+        rtsp_type.return_value.close_socket.assert_called_once_with()
+        self.assertNotIn(playback, client._playbacks)
+
 
 def _identity_responses() -> list[dict]:
     return [

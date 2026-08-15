@@ -4,6 +4,7 @@ Media service.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from typing import Iterator
 
@@ -12,6 +13,7 @@ from ._rpc_connection import _RpcConnection
 from .exceptions import InvalidResponseError
 from .models import Recording, Snapshot
 from .parsers.snapshot import parse_rpc_snapshots
+from .playback import RecordingPlayback
 
 
 class MediaService:
@@ -19,8 +21,14 @@ class MediaService:
     Provides access to recorder media.
     """
 
-    def __init__(self, connection: _RpcConnection) -> None:
+    def __init__(
+        self,
+        connection: _RpcConnection,
+        *,
+        playback_factory: Callable[[Recording], RecordingPlayback] | None = None,
+    ) -> None:
         self._connection = connection
+        self._playback_factory = playback_factory
 
     def recordings(
         self,
@@ -77,6 +85,13 @@ class MediaService:
             )
 
         return response.content
+
+    def playback(self, recording: Recording) -> RecordingPlayback:
+        """Create an RTSP playback session for an indexed recording."""
+
+        if self._playback_factory is None:
+            raise RuntimeError("Recorded playback is not configured.")
+        return self._playback_factory(recording)
 
     def snapshot_bytes(self, snapshot: Snapshot) -> bytes:
         """Retrieve and validate the JPEG bytes for a stored snapshot."""

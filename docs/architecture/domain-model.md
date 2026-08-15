@@ -16,6 +16,7 @@ Recorder (DahuaClient)
 |     |--- PTZ
 |
 |--- Recording (queried via Media)
+|     |--- RecordingPlayback (RTSP)
 |--- Snapshot (queried via Media)
 |
 |--- Disk (0..N)
