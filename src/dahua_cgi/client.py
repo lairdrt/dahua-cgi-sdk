@@ -20,6 +20,7 @@ from __future__ import annotations
 from requests import Response
 
 from ._connection import _Connection
+from ._rpc_connection import _RpcConnection
 from .cameras import CameraService
 from .exceptions import (
     InvalidResponseError,
@@ -80,9 +81,17 @@ class DahuaClient:
             timeout=self._timeout,
             use_ssl=self._use_ssl,
         )
+        self._rpc_connection = _RpcConnection(
+            host=self._host,
+            port=self._port,
+            username=self._username,
+            password=self._password,
+            timeout=self._timeout,
+            use_ssl=self._use_ssl,
+        )
 
         self._media = MediaService(
-            connection=self._connection,
+            connection=self._rpc_connection,
         )
         self._cameras = CameraService(
             connection=self._connection,
@@ -179,7 +188,10 @@ class DahuaClient:
 
     def close(self) -> None:
         """Release underlying HTTP resources."""
-        self._connection.close()
+        try:
+            self._rpc_connection.close()
+        finally:
+            self._connection.close()
 
     def __enter__(self) -> "DahuaClient":
         return self

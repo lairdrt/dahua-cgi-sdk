@@ -8,13 +8,11 @@ from datetime import datetime
 from types import TracebackType
 from typing import Iterator
 
-from requests import Response
-
-from ._connection import _Connection
+from ._rpc_connection import _RpcConnection
 from .exceptions import InvalidResponseError
 from .models import Recording
-from .parsers import parse_cgi_properties
-from .parsers.recording import parse_recordings
+from .parsers.camera import _public_to_response_channel
+from .parsers.recording import parse_rpc_recordings
 
 
 class _MediaSearch(Iterator[Recording]):
@@ -27,7 +25,7 @@ class _MediaSearch(Iterator[Recording]):
 
     def __init__(
         self,
-        connection: _Connection,
+        connection: _RpcConnection,
         *,
         channel: int,
         start: datetime,
@@ -124,58 +122,26 @@ class _MediaSearch(Iterator[Recording]):
         if object_id is None:
             return
 
-        try:
-            self._connection.get(
-                "/cgi-bin/mediaFileFind.cgi",
-                params={
-                    "action": "close",
-                    "object": object_id,
-                },
-            )
-        except Exception:
-            pass
+        for method in ("mediaFileFind.close", "mediaFileFind.destroy"):
+            try:
+                self._connection.call(method, object_id=object_id)
+            except Exception:
+                pass
 
     def _create(self) -> None:
         """
         Create a recorder search object.
         """
 
-        response = self._connection.get(
-            "/cgi-bin/mediaFileFind.cgi",
-            params={
-                "action": "factory.create",
-            },
+        response = self._connection.call(
+            "mediaFileFind.factory.create",
         )
-
-        self._require_success(response)
-        self._object = self._parse_object(response)
-
-    @staticmethod
-    def _require_success(response: Response) -> None:
-        """Raise when a CGI operation returns an unexpected HTTP status."""
-
-        if response.status_code != 200:
-            raise InvalidResponseError(
-                f"Unexpected HTTP status code: {response.status_code}"
-            )
-
-    @staticmethod
-    def _parse_object(response: Response) -> int:
-        """
-        Parse the recorder search object identifier.
-        """
-
-        values = parse_cgi_properties(response.text)
-
         try:
-            return int(values["result"])
-
-        except KeyError as exc:
-            raise InvalidResponseError(
-                "Recorder did not return a search object."
-            ) from exc
-
-        except ValueError as exc:
+            object_id = response["result"]
+            if isinstance(object_id, bool):
+                raise TypeError
+            self._object = int(object_id)
+        except (KeyError, TypeError, ValueError) as exc:
             raise InvalidResponseError(
                 "Recorder returned an invalid search object."
             ) from exc
@@ -188,18 +154,23 @@ class _MediaSearch(Iterator[Recording]):
         if self._object is None:
             raise RuntimeError("Search object has not been created.")
 
-        response = self._connection.get(
-            "/cgi-bin/mediaFileFind.cgi",
-            params={
-                "action": "findFile",
-                "object": self._object,
-                "condition.Channel": self._channel,
-                "condition.StartTime": self._start.strftime("%Y-%m-%d %H:%M:%S"),
-                "condition.EndTime": self._end.strftime("%Y-%m-%d %H:%M:%S"),
+        self._connection.call(
+            "mediaFileFind.findFile",
+            {
+                "condition": {
+                    "Channel": _public_to_response_channel(self._channel),
+                    "Dirs": None,
+                    "Types": ["dav"],
+                    "Order": "Ascent",
+                    "Redundant": "Exclusion",
+                    "Events": None,
+                    "StartTime": self._start.strftime("%Y-%m-%d %H:%M:%S"),
+                    "EndTime": self._end.strftime("%Y-%m-%d %H:%M:%S"),
+                    "Flags": ["Timing", "Event", "Manual"],
+                }
             },
+            object_id=self._object,
         )
-
-        self._require_success(response)
 
     def _fetch_page(self) -> None:
         """
@@ -209,19 +180,12 @@ class _MediaSearch(Iterator[Recording]):
         if self._object is None:
             raise RuntimeError("Search object has not been created.")
 
-        response = self._connection.get(
-            "/cgi-bin/mediaFileFind.cgi",
-            params={
-                "action": "findNextFile",
-                "object": self._object,
-                "count": 100,
-            },
+        response = self._connection.call(
+            "mediaFileFind.findNextFile",
+            {"count": 100},
+            object_id=self._object,
         )
-
-        self._require_success(response)
-        values = parse_cgi_properties(response.text)
-
-        recordings = parse_recordings(values)
+        recordings = parse_rpc_recordings(response)
 
         self._buffer.extend(recordings)
 

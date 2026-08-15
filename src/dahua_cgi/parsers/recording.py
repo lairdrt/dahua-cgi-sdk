@@ -5,10 +5,91 @@ Recording parser.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Mapping
+from typing import Any, Mapping
 
 from ..exceptions import InvalidResponseError
 from ..models import Recording
+from .camera import _response_to_public_channel
+
+
+def parse_rpc_recordings(response: Mapping[str, Any]) -> list[Recording]:
+    """Parse a successful RPC ``findNextFile`` response."""
+
+    params = response.get("params")
+    if not isinstance(params, Mapping):
+        raise InvalidResponseError("RPC recording response omitted params.")
+    found = params.get("found")
+    infos = params.get("infos")
+    if (
+        not isinstance(found, int)
+        or isinstance(found, bool)
+        or found < 0
+    ):
+        raise InvalidResponseError("RPC recording page was malformed.")
+    if found == 0 and infos is None:
+        return []
+    if not isinstance(infos, list):
+        raise InvalidResponseError("RPC recording page was malformed.")
+    if found != len(infos):
+        raise InvalidResponseError("RPC recording count did not match infos.")
+    return [_parse_rpc_recording(info, index) for index, info in enumerate(infos)]
+
+
+def _parse_rpc_recording(value: Any, index: int) -> Recording:
+    if not isinstance(value, Mapping):
+        raise InvalidResponseError(f"Unable to parse RPC recording {index}.")
+    try:
+        events = value.get("Events", [])
+        flags = value.get("Flags", [])
+        if not isinstance(events, list) or not all(
+            isinstance(item, str) for item in events
+        ):
+            raise TypeError
+        if not isinstance(flags, list) or not all(
+            isinstance(item, str) for item in flags
+        ):
+            raise TypeError
+        channel = _required_int(value, "Channel")
+        length = _required_int(value, "Length")
+        return Recording(
+            channel=_response_to_public_channel(channel),
+            cluster=_required_int(value, "Cluster"),
+            cut_length=_optional_int(value, "CutLength", 0),
+            disk=_required_int(value, "Disk"),
+            end_time=_parse_datetime(_required_string(value, "EndTime")),
+            events=tuple(events),
+            file_path=_required_string(value, "FilePath"),
+            flags=tuple(flags),
+            length=length,
+            partition=_required_int(value, "Partition"),
+            start_time=_parse_datetime(_required_string(value, "StartTime")),
+            type=_required_string(value, "Type"),
+            video_stream=_required_string(value, "VideoStream"),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvalidResponseError(
+            f"Unable to parse RPC recording {index}."
+        ) from exc
+
+
+def _required_string(value: Mapping[str, Any], key: str) -> str:
+    item = value[key]
+    if not isinstance(item, str) or not item:
+        raise TypeError
+    return item
+
+
+def _required_int(value: Mapping[str, Any], key: str) -> int:
+    item = value[key]
+    if not isinstance(item, int) or isinstance(item, bool):
+        raise TypeError
+    return item
+
+
+def _optional_int(value: Mapping[str, Any], key: str, default: int) -> int:
+    if key not in value:
+        return default
+    return _required_int(value, key)
 
 
 def parse_recordings(

@@ -8,8 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from ._connection import _Connection
 from ._media_search import _MediaSearch
+from ._rpc_connection import _RpcConnection
 from .exceptions import InvalidResponseError
 from .models import Recording
 
@@ -19,7 +19,7 @@ class MediaService:
     Provides access to recorder media.
     """
 
-    def __init__(self, connection: _Connection) -> None:
+    def __init__(self, connection: _RpcConnection) -> None:
         self._connection = connection
 
     def search(
@@ -32,6 +32,9 @@ class MediaService:
         """
         Search for recordings.
         """
+
+        if channel < 1:
+            raise ValueError("channel must be at least 1")
 
         return _MediaSearch(
             connection=self._connection,
