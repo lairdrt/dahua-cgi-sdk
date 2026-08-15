@@ -11,8 +11,7 @@ from dahua_cgi.models import Camera, StreamProfile
 class CameraServiceTests(TestCase):
     def setUp(self) -> None:
         self.rpc = Mock()
-        self.cgi = Mock()
-        self.service = CameraService(self.rpc, snapshot_connection=self.cgi)
+        self.service = CameraService(self.rpc)
 
     def test_list_combines_rpc_inventory_titles_and_states(self) -> None:
         self.rpc.call.side_effect = _list_responses()
@@ -54,7 +53,6 @@ class CameraServiceTests(TestCase):
                 ),
             ],
         )
-        self.cgi.get.assert_not_called()
 
     def test_state_connected_non_connected_missing_and_absent(self) -> None:
         inventory = [_camera(0), _camera(1), _camera(2), _camera(3)]
@@ -102,36 +100,9 @@ class CameraServiceTests(TestCase):
         self.rpc.call.assert_called_once_with(
             "configManager.getConfig", {"name": "Encode"}
         )
-        self.cgi.get.assert_not_called()
 
-    def test_snapshot_is_the_only_camera_cgi_operation(self) -> None:
-        jpeg = b"\xff\xd8camera image\xff\xd9"
-        self.cgi.get.return_value = _response(
-            content=jpeg, headers={"Content-Type": "image/jpeg; charset=binary"}
-        )
-        self.assertEqual(self.service.snapshot(2), jpeg)
-        self.cgi.get.assert_called_once_with(
-            "/cgi-bin/snapshot.cgi", params={"channel": 2}
-        )
-        self.rpc.call.assert_not_called()
-
-    def test_snapshot_rejects_bad_responses(self) -> None:
-        bad = (
-            (_response(status_code=500), "500"),
-            (
-                _response(content=b"x", headers={"Content-Type": "text/plain"}),
-                "content type",
-            ),
-            (
-                _response(content=b"x", headers={"Content-Type": "image/jpeg"}),
-                "malformed JPEG",
-            ),
-        )
-        for response, message in bad:
-            with self.subTest(message=message):
-                self.cgi.get.return_value = response
-                with self.assertRaisesRegex(InvalidResponseError, message):
-                    self.service.snapshot(1)
+    def test_snapshot_operation_is_not_exposed(self) -> None:
+        self.assertFalse(hasattr(self.service, "snapshot"))
 
     def test_malformed_rpc_responses_raise_sdk_errors(self) -> None:
         malformed = (
@@ -167,10 +138,7 @@ class CameraServiceTests(TestCase):
 
 class DahuaClientCameraServiceTests(TestCase):
     @patch("dahua_cgi.client._RpcConnection")
-    @patch("dahua_cgi.client._Connection")
-    def test_client_gives_camera_service_both_existing_connections(
-        self, connection_type: Mock, rpc_type: Mock
-    ) -> None:
+    def test_client_gives_camera_service_rpc_connection(self, rpc_type: Mock) -> None:
         rpc_type.return_value.call.side_effect = [
             {"params": {"updateSerial": "NVR"}},
             {"params": {"version": {}}},
@@ -178,16 +146,6 @@ class DahuaClientCameraServiceTests(TestCase):
         ]
         client = DahuaClient(host="recorder.example", username="admin", password="x")
         self.assertIs(client.cameras._connection, rpc_type.return_value)
-        self.assertIs(client.cameras._snapshot_connection, connection_type.return_value)
-
-
-def _response(text="", *, status_code=200, content=b"", headers=None) -> Mock:
-    return Mock(
-        text=text,
-        status_code=status_code,
-        content=content,
-        headers=headers or {},
-    )
 
 
 def _camera(channel: int, *, configured: bool = True) -> dict:

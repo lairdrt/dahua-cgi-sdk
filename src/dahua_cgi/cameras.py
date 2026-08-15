@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from ._connection import _Connection
 from ._rpc_connection import _RpcConnection
 from .exceptions import InvalidResponseError
 from .models import Camera, StreamProfile
@@ -12,13 +11,10 @@ from .parsers.camera import parse_cameras, parse_stream_profiles
 
 
 class CameraService:
-    """Provides RPC camera discovery/configuration and CGI snapshots."""
+    """Provides RPC camera discovery and configuration."""
 
-    def __init__(
-        self, connection: _RpcConnection, *, snapshot_connection: _Connection
-    ) -> None:
+    def __init__(self, connection: _RpcConnection) -> None:
         self._connection = connection
-        self._snapshot_connection = snapshot_connection
 
     def list(self) -> tuple[Camera, ...]:
         inventory = self._params(
@@ -49,30 +45,6 @@ class CameraService:
             self._connection.call("configManager.getConfig", {"name": "Encode"})
         ).get("table")
         return parse_stream_profiles(table, channel=channel)
-
-    def snapshot(self, channel: int) -> bytes:
-        """Return a JPEG snapshot using the recorder's binary CGI endpoint."""
-
-        self._validate_channel(channel)
-        response = self._snapshot_connection.get(
-            "/cgi-bin/snapshot.cgi", params={"channel": channel}
-        )
-        if response.status_code != 200:
-            raise InvalidResponseError(
-                f"Unexpected HTTP status code: {response.status_code}"
-            )
-        content_type = response.headers.get("Content-Type", "")
-        media_type = content_type.partition(";")[0].strip().lower()
-        if media_type != "image/jpeg":
-            raise InvalidResponseError(
-                f"Unexpected snapshot content type: {content_type or 'missing'}."
-            )
-        content = response.content
-        if not content.startswith(b"\xff\xd8") or not content.endswith(b"\xff\xd9"):
-            raise InvalidResponseError(
-                "Recorder returned malformed JPEG snapshot data."
-            )
-        return content
 
     @staticmethod
     def _params(response: Any) -> dict[str, Any]:

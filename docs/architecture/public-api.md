@@ -48,7 +48,6 @@ camera.frame_rate
 
 **Operations:**
 ```
-camera.snapshot()
 camera.stream.main()
 camera.stream.sub()
 camera.ptz.pan(...)
@@ -59,15 +58,12 @@ Notice that the stream belongs to the camera.
 
 ### Media
 
-`client.media.search(...)`
+`client.media.search(...)` returns stored `Recording` objects.
 
-returns
+`client.media.snapshots(...)` returns stored `Snapshot` objects. Retrieve a
+stored snapshot's JPEG with `client.media.snapshot_bytes(snapshot)`.
 
-`Recording`
-
-objects.
-
-Then
+Recording operations:
 ```
 recording.download()
 recording.thumbnail()

@@ -4,18 +4,20 @@ Internal media search implementation.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from types import TracebackType
-from typing import Iterator
+from typing import Generic, TypeVar
 
 from ._rpc_connection import _RpcConnection
 from .exceptions import InvalidResponseError
-from .models import Recording
 from .parsers.camera import _public_to_response_channel
 from .parsers.recording import parse_rpc_recordings
 
+_Media = TypeVar("_Media")
 
-class _MediaSearch(Iterator[Recording]):
+
+class _MediaSearch(Iterator[_Media], Generic[_Media]):
     """
     Implements a recorder-managed media search.
 
@@ -30,6 +32,8 @@ class _MediaSearch(Iterator[Recording]):
         channel: int,
         start: datetime,
         end: datetime,
+        media_type: str = "dav",
+        parse_page: Callable[[dict], list[_Media]] = parse_rpc_recordings,
     ) -> None:
 
         self._connection = connection
@@ -37,18 +41,20 @@ class _MediaSearch(Iterator[Recording]):
         self._channel = channel
         self._start = start
         self._end = end
+        self._media_type = media_type
+        self._parse_page = parse_page
 
         self._object: int | None = None
 
-        self._buffer: list[Recording] = []
+        self._buffer: list[_Media] = []
 
         self._finished = False
         self._closed = False
 
-    def __iter__(self) -> "_MediaSearch":
+    def __iter__(self) -> "_MediaSearch[_Media]":
         return self
 
-    def __next__(self) -> Recording:
+    def __next__(self) -> _Media:
         """
         Return the next recording from the search.
         """
@@ -94,7 +100,7 @@ class _MediaSearch(Iterator[Recording]):
                 pass
             raise
 
-    def __enter__(self) -> "_MediaSearch":
+    def __enter__(self) -> "_MediaSearch[_Media]":
         return self
 
     def __exit__(
@@ -160,7 +166,7 @@ class _MediaSearch(Iterator[Recording]):
                 "condition": {
                     "Channel": _public_to_response_channel(self._channel),
                     "Dirs": None,
-                    "Types": ["dav"],
+                    "Types": [self._media_type],
                     "Order": "Ascent",
                     "Redundant": "Exclusion",
                     "Events": None,
@@ -185,7 +191,7 @@ class _MediaSearch(Iterator[Recording]):
             {"count": 100},
             object_id=self._object,
         )
-        recordings = parse_rpc_recordings(response)
+        recordings = self._parse_page(response)
 
         self._buffer.extend(recordings)
 

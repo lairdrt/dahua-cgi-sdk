@@ -7,11 +7,9 @@ from dahua_cgi.exceptions import InvalidResponseError
 
 class DahuaClientRpcIntegrationTests(TestCase):
     @patch("dahua_cgi.client._RpcConnection")
-    @patch("dahua_cgi.client._Connection")
-    def test_client_owns_lazy_rpc_connection_and_closes_both(
-        self, connection_type: Mock, rpc_type: Mock
+    def test_client_owns_lazy_rpc_connection_and_closes_it(
+        self, rpc_type: Mock
     ) -> None:
-        connection = connection_type.return_value
         rpc = rpc_type.return_value
         rpc.call.side_effect = _identity_responses()
 
@@ -47,34 +45,27 @@ class DahuaClientRpcIntegrationTests(TestCase):
         self.assertEqual(client.processor, "processor")
         self.assertIsNone(client.manufacturer)
         self.assertIs(client.media._connection, rpc)
-        connection.get.assert_not_called()
-
         client.close()
 
         rpc_type.return_value.close.assert_called_once_with()
-        connection.close.assert_called_once_with()
 
     @patch("dahua_cgi.client._RpcConnection")
-    @patch("dahua_cgi.client._Connection")
     def test_malformed_rpc_identity_is_rejected(
-        self, connection_type: Mock, rpc_type: Mock
+        self, rpc_type: Mock
     ) -> None:
         rpc_type.return_value.call.return_value = {"params": []}
         with self.assertRaisesRegex(InvalidResponseError, "valid params"):
             DahuaClient(host="recorder.example", username="admin", password="x")
-        connection_type.return_value.get.assert_not_called()
 
     @patch("dahua_cgi.client._RpcConnection")
-    @patch("dahua_cgi.client._Connection")
     def test_missing_model_is_rejected_without_cgi_fallback(
-        self, connection_type: Mock, rpc_type: Mock
+        self, rpc_type: Mock
     ) -> None:
         responses = _identity_responses()
         responses[0] = {"params": {"serialNumber": "serial"}}
         rpc_type.return_value.call.side_effect = responses
         with self.assertRaisesRegex(InvalidResponseError, "determine recorder model"):
             DahuaClient(host="recorder.example", username="admin", password="x")
-        connection_type.return_value.get.assert_not_called()
 
 
 def _identity_responses() -> list[dict]:

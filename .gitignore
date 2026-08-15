@@ -29,5 +29,6 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Video clips
+# Video clips/images
 *.dav
+*.jpg

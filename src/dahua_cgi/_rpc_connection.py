@@ -117,13 +117,18 @@ class _RpcConnection:
         if returned_session := response.get("session"):
             self._session = str(returned_session)
 
-    def get(self, path: str) -> Response:
+    def get(self, path: str, *, stream: bool = False) -> Response:
         """Perform an HTTP Digest GET using the connection credentials."""
 
+        kwargs: dict[str, Any] = {
+            "auth": HTTPDigestAuth(self._username, self._password)
+        }
+        if stream:
+            kwargs["stream"] = True
         return self._request(
             "GET",
             path,
-            auth=HTTPDigestAuth(self._username, self._password),
+            **kwargs,
         )
 
     def logout(self) -> None:

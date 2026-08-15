@@ -129,6 +129,7 @@ class RpcCallTests(TestCase):
             "http://recorder.example:80/cgi-bin/RPC_Loadfile/mnt/dvr/file.dav",
         )
         self.assertIsInstance(request.kwargs["auth"], requests.auth.HTTPDigestAuth)
+        self.assertNotIn("stream", request.kwargs)
 
     def test_close_logs_out_only_when_session_exists(self) -> None:
         self.http.request.return_value = _response({"result": True})

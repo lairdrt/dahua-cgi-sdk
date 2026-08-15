@@ -18,7 +18,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ._connection import _Connection
 from ._rpc_connection import _RpcConnection
 from .cameras import CameraService
 from .exceptions import (
@@ -71,14 +70,6 @@ class DahuaClient:
             f"{'https' if self._use_ssl else 'http'}://" f"{self._host}:{self._port}"
         )
 
-        self._connection = _Connection(
-            host=self._host,
-            port=self._port,
-            username=self._username,
-            password=self._password,
-            timeout=self._timeout,
-            use_ssl=self._use_ssl,
-        )
         self._rpc_connection = _RpcConnection(
             host=self._host,
             port=self._port,
@@ -93,7 +84,6 @@ class DahuaClient:
         )
         self._cameras = CameraService(
             connection=self._rpc_connection,
-            snapshot_connection=self._connection,
         )
 
         #
@@ -188,10 +178,7 @@ class DahuaClient:
 
     def close(self) -> None:
         """Release underlying HTTP resources."""
-        try:
-            self._rpc_connection.close()
-        finally:
-            self._connection.close()
+        self._rpc_connection.close()
 
     def __enter__(self) -> "DahuaClient":
         return self

@@ -14,9 +14,9 @@ Recorder (DahuaClient)
 |--- Camera (0..N)
 |     |--- Stream
 |     |--- PTZ
-|     |--- Snapshot
 |
 |--- Recording (queried via Media)
+|--- Snapshot (queried via Media)
 |
 |--- Disk (0..N)
 |

@@ -1,3 +1,4 @@
+from dataclasses import FrozenInstanceError
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -6,8 +7,9 @@ from unittest.mock import Mock, call
 
 from dahua_cgi.exceptions import InvalidResponseError
 from dahua_cgi.media import MediaService
-from dahua_cgi.models import Recording
+from dahua_cgi.models import Recording, Snapshot
 from dahua_cgi.parsers.recording import parse_rpc_recordings
+from dahua_cgi.parsers.snapshot import parse_rpc_snapshots
 
 
 class MediaServiceDownloadTests(TestCase):
@@ -46,6 +48,106 @@ class MediaServiceDownloadTests(TestCase):
                 MediaService(connection).download(
                     _recording(), Path(directory) / "recording.dav"
                 )
+
+
+class StoredSnapshotTests(TestCase):
+    def setUp(self) -> None:
+        self.connection = Mock()
+        self.service = MediaService(self.connection)
+
+    def snapshots(self):
+        return self.service.snapshots(
+            channel=1,
+            start=datetime(2026, 8, 14, 5, 23),
+            end=datetime(2026, 8, 14, 5, 23, 12),
+        )
+
+    def test_snapshot_model_is_immutable(self) -> None:
+        snapshot = _snapshot()
+        with self.assertRaises(FrozenInstanceError):
+            snapshot.length = 1
+
+    def test_search_uses_jpg_type_and_parses_live_shape(self) -> None:
+        self.connection.call.side_effect = [
+            {"result": 9},
+            {"result": True},
+            _page(_snapshot_info()),
+            _page(),
+            {"result": True},
+            {"result": True},
+        ]
+        snapshots = list(self.snapshots())
+        self.assertEqual(snapshots, [_snapshot()])
+        condition = self.connection.call.call_args_list[1].args[1]["condition"]
+        self.assertEqual(condition["Channel"], 0)
+        self.assertEqual(condition["Types"], ["jpg"])
+        self.assertEqual(
+            self.connection.call.call_args_list[-2:],
+            [
+                call("mediaFileFind.close", object_id=9),
+                call("mediaFileFind.destroy", object_id=9),
+            ],
+        )
+
+    def test_missing_optional_video_stream_is_accepted(self) -> None:
+        info = _snapshot_info()
+        del info["VideoStream"]
+        self.assertIsNone(parse_rpc_snapshots(_page(info))[0].video_stream)
+
+    def test_missing_required_field_is_rejected(self) -> None:
+        info = _snapshot_info()
+        del info["Cluster"]
+        with self.assertRaisesRegex(InvalidResponseError, "snapshot 0"):
+            parse_rpc_snapshots(_page(info))
+
+    def test_non_jpg_record_is_rejected(self) -> None:
+        with self.assertRaisesRegex(InvalidResponseError, "snapshot 0"):
+            parse_rpc_snapshots(_page(_snapshot_info(Type="dav")))
+
+    def test_empty_terminal_page_is_exhaustion(self) -> None:
+        self.assertEqual(parse_rpc_snapshots(_page()), [])
+
+    def test_parse_error_cleans_up(self) -> None:
+        self.connection.call.side_effect = [
+            {"result": 9},
+            {"result": True},
+            _page({"Channel": 0}),
+            {"result": True},
+            {"result": True},
+        ]
+        with self.assertRaisesRegex(InvalidResponseError, "snapshot 0"):
+            next(self.snapshots())
+        self.assertEqual(
+            self.connection.call.call_args_list[-2:],
+            [
+                call("mediaFileFind.close", object_id=9),
+                call("mediaFileFind.destroy", object_id=9),
+            ],
+        )
+
+    def test_snapshot_bytes_tolerates_bogus_length_and_validates_jpeg(self) -> None:
+        response = Mock(status_code=200)
+        response.raw.stream.return_value = [b"\xff\xd8jpeg", b" data\xff\xd9"]
+        self.connection.get.return_value = response
+        self.assertEqual(
+            self.service.snapshot_bytes(_snapshot()), b"\xff\xd8jpeg data\xff\xd9"
+        )
+        self.connection.get.assert_called_once_with(
+            "/cgi-bin/RPC_Loadfile/mnt/dvr/snapshot.jpg", stream=True
+        )
+        self.assertFalse(response.raw.enforce_content_length)
+        response.raw.stream.assert_called_once_with(8192, decode_content=False)
+        response.close.assert_called_once_with()
+
+    def test_snapshot_bytes_rejects_invalid_or_truncated_jpeg(self) -> None:
+        for payload in (b"not a jpeg\xff\xd9", b"\xff\xd8truncated"):
+            with self.subTest(payload=payload):
+                response = Mock(status_code=200)
+                response.raw.stream.return_value = [payload]
+                self.connection.get.return_value = response
+                with self.assertRaisesRegex(InvalidResponseError, "malformed"):
+                    self.service.snapshot_bytes(_snapshot())
+                response.close.assert_called_once_with()
 
 
 class MediaSearchLifecycleTests(TestCase):
@@ -242,6 +344,20 @@ def _recording(file_path: str = "/mnt/dvr/recording.dav") -> Recording:
     )
 
 
+def _snapshot() -> Snapshot:
+    return Snapshot(
+        channel=1,
+        start=datetime(2026, 8, 14, 5, 23, 6),
+        end=datetime(2026, 8, 14, 5, 23, 6),
+        file_path="/mnt/dvr/snapshot.jpg",
+        length=28672,
+        disk=1,
+        cluster=108687,
+        partition=1,
+        video_stream="Main",
+    )
+
+
 def _page(*infos: dict) -> dict:
     return {
         "id": 5,
@@ -264,6 +380,23 @@ def _info(**changes) -> dict:
         "Length": 41943040,
         "Partition": 1,
         "Type": "dav",
+        "VideoStream": "Main",
+    }
+    value.update(changes)
+    return value
+
+
+def _snapshot_info(**changes) -> dict:
+    value = {
+        "Channel": 0,
+        "Cluster": 108687,
+        "Disk": 1,
+        "StartTime": "2026-08-14 05:23:06",
+        "EndTime": "2026-08-14 05:23:06",
+        "FilePath": "/mnt/dvr/snapshot.jpg",
+        "Length": 28672,
+        "Partition": 1,
+        "Type": "jpg",
         "VideoStream": "Main",
     }
     value.update(changes)
