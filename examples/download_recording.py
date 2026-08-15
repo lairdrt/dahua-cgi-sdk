@@ -3,6 +3,7 @@ Example of connecting to a Dahua device and downloading recordings.
 """
 import os
 from datetime import datetime
+from pathlib import Path
 
 from dahua_cgi import DahuaClient
 
@@ -29,7 +30,7 @@ def main() -> None:
 
         download_this = None
         print("\nSearching for recordings...\n")
-        for recording in client.media.search(
+        for recording in client.media.recordings(
             channel=1,
             start=datetime(2026, 8, 6, 0, 0, 0),
             end=datetime(2026, 8, 7, 23, 59, 59),
@@ -47,10 +48,7 @@ def main() -> None:
         if download_this is not None:
             start_stamp = download_this.start_time.strftime("%Y%m%d_%H%M%S")
             end_stamp = download_this.end_time.strftime("%Y%m%d_%H%M%S")
-            download_path = os.path.join(
-                os.getcwd(),
-                f"{start_stamp}_{end_stamp}.dav",
-            )
+            download_path = Path.cwd() / f"{start_stamp}_{end_stamp}.dav"
 
             print(
                 f"Downloading recording: "
@@ -60,7 +58,7 @@ def main() -> None:
                 f"{download_this.length} "
                 f"{download_this.file_path}"
             )
-            client.media.download(download_this, download_path)
+            download_path.write_bytes(client.media.recording_bytes(download_this))
             print(f"Downloaded to: {download_path}")
 
 

@@ -58,17 +58,15 @@ Notice that the stream belongs to the camera.
 
 ### Media
 
-`client.media.search(...)` returns stored `Recording` objects.
+`client.media.recordings(...)` returns indexed stored `Recording` objects.
+Retrieve the stored DAV bytes with `client.media.recording_bytes(recording)`.
 
 `client.media.snapshots(...)` returns stored `Snapshot` objects. Retrieve a
 stored snapshot's JPEG with `client.media.snapshot_bytes(snapshot)`.
 
-Recording operations:
-```
-recording.download()
-recording.thumbnail()
-recording.delete()
-```
+RPC2 performs media indexing and search. `RPC_Loadfile` explicitly retrieves
+indexed DAV and JPG files. RTSP is reserved for future live and recorded video
+streaming/playback; byte retrieval is not playback.
 
 ### Storage
 

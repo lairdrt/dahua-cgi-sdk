@@ -5,7 +5,6 @@ Media service.
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 from typing import Iterator
 
 from ._media_search import _MediaSearch
@@ -23,7 +22,7 @@ class MediaService:
     def __init__(self, connection: _RpcConnection) -> None:
         self._connection = connection
 
-    def search(
+    def recordings(
         self,
         *,
         channel: int,
@@ -65,17 +64,8 @@ class MediaService:
             parse_page=parse_rpc_snapshots,
         )
 
-    def download(
-        self,
-        recording: Recording,
-        destination: str | Path,
-    ) -> Path:
-        """
-        Download a recording to ``destination``.
-
-        Returns the path written after the recorder successfully supplies the
-        recording data.
-        """
+    def recording_bytes(self, recording: Recording) -> bytes:
+        """Retrieve the stored DAV bytes for a recording."""
 
         response = self._connection.get(
             f"/cgi-bin/RPC_Loadfile/{recording.file_path.lstrip('/')}"
@@ -86,10 +76,7 @@ class MediaService:
                 f"Unexpected HTTP status code: {response.status_code}"
             )
 
-        target = Path(destination)
-        target.write_bytes(response.content)
-
-        return target
+        return response.content
 
     def snapshot_bytes(self, snapshot: Snapshot) -> bytes:
         """Retrieve and validate the JPEG bytes for a stored snapshot."""

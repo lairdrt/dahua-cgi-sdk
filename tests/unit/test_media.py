@@ -1,7 +1,5 @@
 from dataclasses import FrozenInstanceError
 from datetime import datetime
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import Mock, call
 
@@ -12,42 +10,40 @@ from dahua_cgi.parsers.recording import parse_rpc_recordings
 from dahua_cgi.parsers.snapshot import parse_rpc_snapshots
 
 
-class MediaServiceDownloadTests(TestCase):
-    def test_download_requests_exact_recording_file_and_writes_bytes(self) -> None:
+class RecordingBytesTests(TestCase):
+    def test_recording_bytes_requests_exact_file_and_returns_bytes(self) -> None:
         connection = Mock()
+        payload = b"DHII recording data"
         connection.get.return_value = Mock(
             status_code=200,
-            content=b"recording data",
+            content=payload,
             headers={"Content-Type": "application/http"},
         )
-        with TemporaryDirectory() as directory:
-            destination = Path(directory) / "recording.dav"
-            result = MediaService(connection).download(
-                _recording(file_path="/mnt/dvr/recording.dav"), destination
-            )
-            self.assertEqual(result, destination)
-            self.assertEqual(destination.read_bytes(), b"recording data")
+        result = MediaService(connection).recording_bytes(
+            _recording(file_path="/mnt/dvr/recording.dav")
+        )
+        self.assertIs(result, payload)
+        self.assertIsInstance(result, bytes)
         connection.get.assert_called_once_with(
             "/cgi-bin/RPC_Loadfile/mnt/dvr/recording.dav"
         )
 
-    def test_download_does_not_write_after_http_failure(self) -> None:
+    def test_recording_bytes_rejects_http_failure(self) -> None:
         connection = Mock()
         connection.get.return_value = Mock(status_code=404)
-        with TemporaryDirectory() as directory:
-            destination = Path(directory) / "recording.dav"
-            with self.assertRaisesRegex(InvalidResponseError, "404"):
-                MediaService(connection).download(_recording(), destination)
-            self.assertFalse(destination.exists())
+        with self.assertRaisesRegex(InvalidResponseError, "404"):
+            MediaService(connection).recording_bytes(_recording())
 
-    def test_download_propagates_rpc_transport_sdk_error(self) -> None:
+    def test_recording_bytes_propagates_rpc_transport_sdk_error(self) -> None:
         connection = Mock()
         connection.get.side_effect = InvalidResponseError("download failed")
-        with TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(InvalidResponseError, "download failed"):
-                MediaService(connection).download(
-                    _recording(), Path(directory) / "recording.dav"
-                )
+        with self.assertRaisesRegex(InvalidResponseError, "download failed"):
+            MediaService(connection).recording_bytes(_recording())
+
+    def test_obsolete_generic_methods_are_not_exposed(self) -> None:
+        service = MediaService(Mock())
+        self.assertFalse(hasattr(service, "search"))
+        self.assertFalse(hasattr(service, "download"))
 
 
 class StoredSnapshotTests(TestCase):
@@ -155,20 +151,20 @@ class MediaSearchLifecycleTests(TestCase):
         self.connection = Mock()
         self.service = MediaService(self.connection)
 
-    def search(self):
-        return self.service.search(
+    def recordings(self):
+        return self.service.recordings(
             channel=1,
             start=datetime(2026, 8, 14, 5, 27, 10),
             end=datetime(2026, 8, 14, 5, 28, 25),
         )
 
     def test_search_is_lazy(self) -> None:
-        self.search()
+        self.recordings()
         self.connection.call.assert_not_called()
 
     def test_search_rejects_non_public_channel(self) -> None:
         with self.assertRaisesRegex(ValueError, "at least 1"):
-            self.service.search(
+            self.service.recordings(
                 channel=0,
                 start=datetime(2026, 8, 14),
                 end=datetime(2026, 8, 15),
@@ -184,7 +180,7 @@ class MediaSearchLifecycleTests(TestCase):
             {"result": True},
             {"result": True},
         ]
-        recordings = list(self.search())
+        recordings = list(self.recordings())
         self.assertEqual([item.channel for item in recordings], [1, 2])
         self.assertEqual(recordings[0].events, ("VideoMotion",))
         self.assertEqual(recordings[0].flags, ("Event",))
@@ -232,7 +228,7 @@ class MediaSearchLifecycleTests(TestCase):
             {"result": True},
         ]
         with self.assertRaisesRegex(InvalidResponseError, "rejected"):
-            next(self.search())
+            next(self.recordings())
         self.assertEqual(
             self.connection.call.call_args_list[-2:],
             [
@@ -250,7 +246,7 @@ class MediaSearchLifecycleTests(TestCase):
             RuntimeError("destroy failed"),
         ]
         with self.assertRaisesRegex(InvalidResponseError, "recording 0"):
-            next(self.search())
+            next(self.recordings())
 
     def test_explicit_close_is_idempotent_and_uses_both_cleanup_calls(self) -> None:
         self.connection.call.side_effect = [
@@ -260,7 +256,7 @@ class MediaSearchLifecycleTests(TestCase):
             {"result": True},
             {"result": True},
         ]
-        search = self.search()
+        search = self.recordings()
         next(search)
         search.close()
         search.close()
@@ -273,7 +269,7 @@ class MediaSearchLifecycleTests(TestCase):
         )
 
     def test_close_before_iteration_does_not_contact_recorder(self) -> None:
-        search = self.search()
+        search = self.recordings()
         search.close()
         with self.assertRaises(StopIteration):
             next(search)
@@ -288,7 +284,7 @@ class MediaSearchLifecycleTests(TestCase):
             {"result": True},
         ]
         with self.assertRaisesRegex(RuntimeError, "body failed"):
-            with self.search() as search:
+            with self.recordings() as search:
                 next(search)
                 raise RuntimeError("body failed")
         self.assertEqual(
