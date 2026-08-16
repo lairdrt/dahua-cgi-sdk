@@ -16,7 +16,9 @@ Successful construction guarantees that:
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ._rpc_connection import _RpcConnection
 from ._rtsp_connection import _RtspConnection
@@ -28,6 +30,7 @@ from .live import LiveStream, LiveStreamName
 from .media import MediaService
 from .models import Recording, StreamProfile
 from .playback import RecordingPlayback
+from .recorder_time import parse_recorder_current_time, parse_recorder_timezone
 
 
 class DahuaClient:
@@ -85,10 +88,6 @@ class DahuaClient:
 
         self._playbacks: set[RecordingPlayback] = set()
         self._live_streams: set[LiveStream] = set()
-        self._media = MediaService(
-            connection=self._rpc_connection,
-            playback_factory=self._create_playback,
-        )
         self._cameras = CameraService(
             connection=self._rpc_connection,
             live_stream_factory=self._create_live_stream,
@@ -105,8 +104,14 @@ class DahuaClient:
         self._firmware_version: str | None = None
         self._api_version: str | None = None
         self._processor: str | None = None
+        self._timezone: ZoneInfo
 
         self._verify_connection()
+        self._media = MediaService(
+            connection=self._rpc_connection,
+            timezone=self._timezone,
+            playback_factory=self._create_playback,
+        )
 
     #
     # ------------------------------------------------------------------
@@ -164,6 +169,18 @@ class DahuaClient:
     def processor(self) -> str | None:
         """Recorder processor type."""
         return self._processor
+
+    @property
+    def timezone(self) -> ZoneInfo:
+        """Recorder's configured IANA timezone."""
+        return self._timezone
+
+    @property
+    def current_time(self) -> datetime:
+        """Current recorder-local time as an aware datetime."""
+        return parse_recorder_current_time(
+            self._rpc_connection.call("global.getCurrentTime"), self._timezone
+        )
 
     @property
     def media(self) -> MediaService:
@@ -255,6 +272,11 @@ class DahuaClient:
         hardware = self._rpc_params(
             self._rpc_connection.call("magicBox.getHardwareVersion"),
             method="magicBox.getHardwareVersion",
+        )
+        self._timezone = parse_recorder_timezone(
+            self._rpc_connection.call(
+                "configManager.getConfig", {"name": "NTP"}
+            )
         )
         software_version = software.get("version")
         if not isinstance(software_version, Mapping):

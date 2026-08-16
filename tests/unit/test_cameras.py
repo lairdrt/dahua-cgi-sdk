@@ -143,6 +143,11 @@ class DahuaClientCameraServiceTests(TestCase):
             {"params": {"updateSerial": "NVR"}},
             {"params": {"version": {}}},
             {"params": {}},
+            {
+                "params": {
+                    "table": {"TimeZoneDesc": "America/Los_Angeles"}
+                }
+            },
         ]
         client = DahuaClient(host="recorder.example", username="admin", password="x")
         self.assertIs(client.cameras._connection, rpc_type.return_value)

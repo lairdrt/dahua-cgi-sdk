@@ -6,6 +6,19 @@ The public facing API is organized around the network video recorder (NVR).
 
 Everything starts here.
 
+### Recorder Time
+
+`client.timezone` is the recorder-configured IANA `zoneinfo.ZoneInfo`,
+discovered from the RPC NTP configuration. `client.current_time` retrieves the
+current recorder wall clock and returns a timezone-aware `datetime`.
+
+Media search bounds must be timezone-aware. The SDK converts them to recorder
+local time before sending Dahua's offset-free `YYYY-MM-DD HH:MM:SS` wire
+format. Returned recording and snapshot timestamps carry `client.timezone`.
+Historical DST offsets come from IANA rules. Because the recorder wire format
+cannot represent an overlap `fold`, ambiguous fall-back wall times are rejected
+instead of being assigned a potentially incorrect offset.
+
 ## Composition of the API
 
 ### Recorder Identity

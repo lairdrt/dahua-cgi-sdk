@@ -6,13 +6,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 from ..exceptions import InvalidResponseError
 from ..models import Recording
+from ..recorder_time import localize_recorder_time
 from .camera import _response_to_public_channel
 
 
-def parse_rpc_recordings(response: Mapping[str, Any]) -> list[Recording]:
+def parse_rpc_recordings(
+    response: Mapping[str, Any], *, timezone: ZoneInfo
+) -> list[Recording]:
     """Parse a successful RPC ``findNextFile`` response."""
 
     params = response.get("params")
@@ -32,10 +36,13 @@ def parse_rpc_recordings(response: Mapping[str, Any]) -> list[Recording]:
         raise InvalidResponseError("RPC recording page was malformed.")
     if found != len(infos):
         raise InvalidResponseError("RPC recording count did not match infos.")
-    return [_parse_rpc_recording(info, index) for index, info in enumerate(infos)]
+    return [
+        _parse_rpc_recording(info, index, timezone)
+        for index, info in enumerate(infos)
+    ]
 
 
-def _parse_rpc_recording(value: Any, index: int) -> Recording:
+def _parse_rpc_recording(value: Any, index: int, timezone: ZoneInfo) -> Recording:
     if not isinstance(value, Mapping):
         raise InvalidResponseError(f"Unable to parse RPC recording {index}.")
     try:
@@ -56,13 +63,17 @@ def _parse_rpc_recording(value: Any, index: int) -> Recording:
             cluster=_required_int(value, "Cluster"),
             cut_length=_optional_int(value, "CutLength", 0),
             disk=_required_int(value, "Disk"),
-            end_time=_parse_datetime(_required_string(value, "EndTime")),
+            end_time=localize_recorder_time(
+                _parse_datetime(_required_string(value, "EndTime")), timezone
+            ),
             events=tuple(events),
             file_path=_required_string(value, "FilePath"),
             flags=tuple(flags),
             length=length,
             partition=_required_int(value, "Partition"),
-            start_time=_parse_datetime(_required_string(value, "StartTime")),
+            start_time=localize_recorder_time(
+                _parse_datetime(_required_string(value, "StartTime")), timezone
+            ),
             type=_required_string(value, "Type"),
             video_stream=_required_string(value, "VideoStream"),
         )

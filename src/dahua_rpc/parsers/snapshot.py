@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 from ..exceptions import InvalidResponseError
 from ..models import Snapshot
+from ..recorder_time import localize_recorder_time
 from .camera import _response_to_public_channel
 
 
-def parse_rpc_snapshots(response: Mapping[str, Any]) -> list[Snapshot]:
+def parse_rpc_snapshots(
+    response: Mapping[str, Any], *, timezone: ZoneInfo
+) -> list[Snapshot]:
     """Parse a successful JPG ``findNextFile`` response."""
 
     params = response.get("params")
@@ -26,10 +30,13 @@ def parse_rpc_snapshots(response: Mapping[str, Any]) -> list[Snapshot]:
         raise InvalidResponseError("RPC snapshot page was malformed.")
     if found != len(infos):
         raise InvalidResponseError("RPC snapshot count did not match infos.")
-    return [_parse_rpc_snapshot(info, index) for index, info in enumerate(infos)]
+    return [
+        _parse_rpc_snapshot(info, index, timezone)
+        for index, info in enumerate(infos)
+    ]
 
 
-def _parse_rpc_snapshot(value: Any, index: int) -> Snapshot:
+def _parse_rpc_snapshot(value: Any, index: int, timezone: ZoneInfo) -> Snapshot:
     if not isinstance(value, Mapping):
         raise InvalidResponseError(f"Unable to parse RPC snapshot {index}.")
     try:
@@ -43,8 +50,12 @@ def _parse_rpc_snapshot(value: Any, index: int) -> Snapshot:
             raise TypeError
         return Snapshot(
             channel=_response_to_public_channel(_required_int(value, "Channel")),
-            start=_parse_datetime(_required_string(value, "StartTime")),
-            end=_parse_datetime(_required_string(value, "EndTime")),
+            start=localize_recorder_time(
+                _parse_datetime(_required_string(value, "StartTime")), timezone
+            ),
+            end=localize_recorder_time(
+                _parse_datetime(_required_string(value, "EndTime")), timezone
+            ),
             file_path=_required_string(value, "FilePath"),
             length=_required_int(value, "Length"),
             disk=_required_int(value, "Disk"),

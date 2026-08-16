@@ -8,11 +8,12 @@ from collections.abc import Callable, Iterator
 from datetime import datetime
 from types import TracebackType
 from typing import Generic, TypeVar
+from zoneinfo import ZoneInfo
 
 from ._rpc_connection import _RpcConnection
 from .exceptions import InvalidResponseError
 from .parsers.camera import _public_to_response_channel
-from .parsers.recording import parse_rpc_recordings
+from .recorder_time import recorder_search_time
 
 _Media = TypeVar("_Media")
 
@@ -32,8 +33,9 @@ class _MediaSearch(Iterator[_Media], Generic[_Media]):
         channel: int,
         start: datetime,
         end: datetime,
+        timezone: ZoneInfo,
         media_type: str = "dav",
-        parse_page: Callable[[dict], list[_Media]] = parse_rpc_recordings,
+        parse_page: Callable[[dict], list[_Media]],
     ) -> None:
 
         self._connection = connection
@@ -41,6 +43,7 @@ class _MediaSearch(Iterator[_Media], Generic[_Media]):
         self._channel = channel
         self._start = start
         self._end = end
+        self._timezone = timezone
         self._media_type = media_type
         self._parse_page = parse_page
 
@@ -170,8 +173,10 @@ class _MediaSearch(Iterator[_Media], Generic[_Media]):
                     "Order": "Ascent",
                     "Redundant": "Exclusion",
                     "Events": None,
-                    "StartTime": self._start.strftime("%Y-%m-%d %H:%M:%S"),
-                    "EndTime": self._end.strftime("%Y-%m-%d %H:%M:%S"),
+                    "StartTime": recorder_search_time(
+                        self._start, self._timezone
+                    ),
+                    "EndTime": recorder_search_time(self._end, self._timezone),
                     "Flags": ["Timing", "Event", "Manual"],
                 }
             },

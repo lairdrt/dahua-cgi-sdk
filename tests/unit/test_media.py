@@ -1,13 +1,16 @@
 from dataclasses import FrozenInstanceError
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest import TestCase
 from unittest.mock import Mock, call
+from zoneinfo import ZoneInfo
 
 from dahua_rpc.exceptions import InvalidResponseError
 from dahua_rpc.media import MediaService
 from dahua_rpc.models import Recording, Snapshot
 from dahua_rpc.parsers.recording import parse_rpc_recordings
 from dahua_rpc.parsers.snapshot import parse_rpc_snapshots
+
+RECORDER_TIMEZONE = ZoneInfo("America/Los_Angeles")
 
 
 class RecordingBytesTests(TestCase):
@@ -19,7 +22,9 @@ class RecordingBytesTests(TestCase):
             content=payload,
             headers={"Content-Type": "application/http"},
         )
-        result = MediaService(connection).recording_bytes(
+        result = MediaService(
+            connection, timezone=RECORDER_TIMEZONE
+        ).recording_bytes(
             _recording(file_path="/mnt/dvr/recording.dav")
         )
         self.assertIs(result, payload)
@@ -32,16 +37,20 @@ class RecordingBytesTests(TestCase):
         connection = Mock()
         connection.get.return_value = Mock(status_code=404)
         with self.assertRaisesRegex(InvalidResponseError, "404"):
-            MediaService(connection).recording_bytes(_recording())
+            MediaService(
+                connection, timezone=RECORDER_TIMEZONE
+            ).recording_bytes(_recording())
 
     def test_recording_bytes_propagates_rpc_transport_sdk_error(self) -> None:
         connection = Mock()
         connection.get.side_effect = InvalidResponseError("download failed")
         with self.assertRaisesRegex(InvalidResponseError, "download failed"):
-            MediaService(connection).recording_bytes(_recording())
+            MediaService(
+                connection, timezone=RECORDER_TIMEZONE
+            ).recording_bytes(_recording())
 
     def test_obsolete_generic_methods_are_not_exposed(self) -> None:
-        service = MediaService(Mock())
+        service = MediaService(Mock(), timezone=RECORDER_TIMEZONE)
         self.assertFalse(hasattr(service, "search"))
         self.assertFalse(hasattr(service, "download"))
 
@@ -49,13 +58,15 @@ class RecordingBytesTests(TestCase):
 class StoredSnapshotTests(TestCase):
     def setUp(self) -> None:
         self.connection = Mock()
-        self.service = MediaService(self.connection)
+        self.service = MediaService(
+            self.connection, timezone=RECORDER_TIMEZONE
+        )
 
     def snapshots(self):
         return self.service.snapshots(
             channel=1,
-            start=datetime(2026, 8, 14, 5, 23),
-            end=datetime(2026, 8, 14, 5, 23, 12),
+            start=datetime(2026, 8, 14, 5, 23, tzinfo=RECORDER_TIMEZONE),
+            end=datetime(2026, 8, 14, 5, 23, 12, tzinfo=RECORDER_TIMEZONE),
         )
 
     def test_snapshot_model_is_immutable(self) -> None:
@@ -88,20 +99,28 @@ class StoredSnapshotTests(TestCase):
     def test_missing_optional_video_stream_is_accepted(self) -> None:
         info = _snapshot_info()
         del info["VideoStream"]
-        self.assertIsNone(parse_rpc_snapshots(_page(info))[0].video_stream)
+        self.assertIsNone(
+            parse_rpc_snapshots(_page(info), timezone=RECORDER_TIMEZONE)[
+                0
+            ].video_stream
+        )
 
     def test_missing_required_field_is_rejected(self) -> None:
         info = _snapshot_info()
         del info["Cluster"]
         with self.assertRaisesRegex(InvalidResponseError, "snapshot 0"):
-            parse_rpc_snapshots(_page(info))
+            parse_rpc_snapshots(_page(info), timezone=RECORDER_TIMEZONE)
 
     def test_non_jpg_record_is_rejected(self) -> None:
         with self.assertRaisesRegex(InvalidResponseError, "snapshot 0"):
-            parse_rpc_snapshots(_page(_snapshot_info(Type="dav")))
+            parse_rpc_snapshots(
+                _page(_snapshot_info(Type="dav")), timezone=RECORDER_TIMEZONE
+            )
 
     def test_empty_terminal_page_is_exhaustion(self) -> None:
-        self.assertEqual(parse_rpc_snapshots(_page()), [])
+        self.assertEqual(
+            parse_rpc_snapshots(_page(), timezone=RECORDER_TIMEZONE), []
+        )
 
     def test_parse_error_cleans_up(self) -> None:
         self.connection.call.side_effect = [
@@ -149,13 +168,15 @@ class StoredSnapshotTests(TestCase):
 class MediaSearchLifecycleTests(TestCase):
     def setUp(self) -> None:
         self.connection = Mock()
-        self.service = MediaService(self.connection)
+        self.service = MediaService(
+            self.connection, timezone=RECORDER_TIMEZONE
+        )
 
     def recordings(self):
         return self.service.recordings(
             channel=1,
-            start=datetime(2026, 8, 14, 5, 27, 10),
-            end=datetime(2026, 8, 14, 5, 28, 25),
+            start=datetime(2026, 8, 14, 5, 27, 10, tzinfo=RECORDER_TIMEZONE),
+            end=datetime(2026, 8, 14, 5, 28, 25, tzinfo=RECORDER_TIMEZONE),
         )
 
     def test_search_is_lazy(self) -> None:
@@ -166,8 +187,8 @@ class MediaSearchLifecycleTests(TestCase):
         with self.assertRaisesRegex(ValueError, "at least 1"):
             self.service.recordings(
                 channel=0,
-                start=datetime(2026, 8, 14),
-                end=datetime(2026, 8, 15),
+                start=datetime(2026, 8, 14, tzinfo=RECORDER_TIMEZONE),
+                end=datetime(2026, 8, 15, tzinfo=RECORDER_TIMEZONE),
             )
         self.connection.call.assert_not_called()
 
@@ -187,6 +208,7 @@ class MediaSearchLifecycleTests(TestCase):
         self.assertEqual(recordings[0].disk, 1)
         self.assertEqual(recordings[0].cluster, 108756)
         self.assertEqual(recordings[0].partition, 1)
+        self.assertEqual(recordings[0].start_time.tzinfo, RECORDER_TIMEZONE)
         self.assertEqual(
             self.connection.call.call_args_list,
             [
@@ -305,7 +327,8 @@ class RpcRecordingPageTests(TestCase):
                     "params": {"found": 0, "infos": None},
                     "result": True,
                     "session": "session-id",
-                }
+                },
+                timezone=RECORDER_TIMEZONE,
             ),
             [],
         )
@@ -318,8 +341,51 @@ class RpcRecordingPageTests(TestCase):
                     "params": {"found": 2, "infos": None},
                     "result": True,
                     "session": "session-id",
-                }
+                },
+                timezone=RECORDER_TIMEZONE,
             )
+
+
+class TimezoneAwareMediaTests(TestCase):
+    def test_naive_search_bounds_are_rejected_on_iteration(self) -> None:
+        service = MediaService(Mock(), timezone=RECORDER_TIMEZONE)
+        with self.assertRaisesRegex(ValueError, "timezone-aware"):
+            service.recordings(
+                channel=1,
+                start=datetime(2026, 8, 14, 5, 27),
+                end=datetime(2026, 8, 14, 5, 29),
+            )
+
+    def test_non_recorder_timezone_bounds_convert_to_local_wall_time(self) -> None:
+        connection = Mock()
+        connection.call.side_effect = [
+            {"result": 7},
+            {"result": True},
+            _page(),
+            {"result": True},
+            {"result": True},
+        ]
+        search = MediaService(
+            connection, timezone=RECORDER_TIMEZONE
+        ).recordings(
+            channel=1,
+            start=datetime(2026, 8, 14, 12, 27, tzinfo=UTC),
+            end=datetime(2026, 8, 14, 12, 29, tzinfo=UTC),
+        )
+        list(search)
+        condition = connection.call.call_args_list[1].args[1]["condition"]
+        self.assertEqual(condition["StartTime"], "2026-08-14 05:27:00")
+        self.assertEqual(condition["EndTime"], "2026-08-14 05:29:00")
+
+    def test_historical_dst_rules_are_not_a_fixed_current_offset(self) -> None:
+        winter = datetime(2026, 1, 15, 12, tzinfo=UTC).astimezone(
+            RECORDER_TIMEZONE
+        )
+        summer = datetime(2026, 7, 15, 12, tzinfo=UTC).astimezone(
+            RECORDER_TIMEZONE
+        )
+        self.assertEqual(winter.utcoffset().total_seconds(), -8 * 3600)
+        self.assertEqual(summer.utcoffset().total_seconds(), -7 * 3600)
 
 
 def _recording(file_path: str = "/mnt/dvr/recording.dav") -> Recording:
@@ -328,8 +394,8 @@ def _recording(file_path: str = "/mnt/dvr/recording.dav") -> Recording:
         cluster=108756,
         disk=1,
         partition=1,
-        start_time=datetime(2026, 8, 14, 5, 27, 10),
-        end_time=datetime(2026, 8, 14, 5, 28, 25),
+        start_time=datetime(2026, 8, 14, 5, 27, 10, tzinfo=RECORDER_TIMEZONE),
+        end_time=datetime(2026, 8, 14, 5, 28, 25, tzinfo=RECORDER_TIMEZONE),
         file_path=file_path,
         type="dav",
         video_stream="Main",
@@ -343,8 +409,8 @@ def _recording(file_path: str = "/mnt/dvr/recording.dav") -> Recording:
 def _snapshot() -> Snapshot:
     return Snapshot(
         channel=1,
-        start=datetime(2026, 8, 14, 5, 23, 6),
-        end=datetime(2026, 8, 14, 5, 23, 6),
+        start=datetime(2026, 8, 14, 5, 23, 6, tzinfo=RECORDER_TIMEZONE),
+        end=datetime(2026, 8, 14, 5, 23, 6, tzinfo=RECORDER_TIMEZONE),
         file_path="/mnt/dvr/snapshot.jpg",
         length=28672,
         disk=1,

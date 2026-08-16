@@ -1,5 +1,7 @@
+from datetime import datetime
 from unittest import TestCase
 from unittest.mock import Mock, call, patch
+from zoneinfo import ZoneInfo
 
 from dahua_rpc.client import DahuaClient
 from dahua_rpc.exceptions import InvalidResponseError
@@ -35,6 +37,7 @@ class DahuaClientRpcIntegrationTests(TestCase):
                 call("magicBox.getSystemInfo"),
                 call("magicBox.getSoftwareVersion"),
                 call("magicBox.getHardwareVersion"),
+                call("configManager.getConfig", {"name": "NTP"}),
             ],
         )
         self.assertEqual(client.model, "DHI-NVR5216-16P-4KS2E")
@@ -44,10 +47,27 @@ class DahuaClientRpcIntegrationTests(TestCase):
         self.assertEqual(client.api_version, "web")
         self.assertEqual(client.processor, "processor")
         self.assertIsNone(client.manufacturer)
+        self.assertEqual(client.timezone, ZoneInfo("America/Los_Angeles"))
         self.assertIs(client.media._connection, rpc)
         client.close()
 
         rpc_type.return_value.close.assert_called_once_with()
+
+    @patch("dahua_rpc.client._RpcConnection")
+    def test_current_time_is_recorder_timezone_aware(self, rpc_type: Mock) -> None:
+        rpc = rpc_type.return_value
+        rpc.call.side_effect = _identity_responses() + [
+            {"params": {"time": "2026-08-16 13:04:01"}}
+        ]
+        client = DahuaClient(
+            host="recorder.example", username="admin", password="password"
+        )
+
+        self.assertEqual(
+            client.current_time,
+            datetime(2026, 8, 16, 13, 4, 1, tzinfo=client.timezone),
+        )
+        rpc.call.assert_called_with("global.getCurrentTime")
 
     @patch("dahua_rpc.client._RpcConnection")
     def test_malformed_rpc_identity_is_rejected(
@@ -138,4 +158,12 @@ def _identity_responses() -> list[dict]:
         },
         {"params": {"version": {"Version": "software", "WebVersion": "web"}}},
         {"params": {"version": "hardware"}},
+        {
+            "params": {
+                "table": {
+                    "TimeZone": 28,
+                    "TimeZoneDesc": "America/Los_Angeles",
+                }
+            }
+        },
     ]

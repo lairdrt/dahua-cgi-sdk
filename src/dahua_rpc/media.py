@@ -6,12 +6,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from functools import partial
 from typing import Iterator
+from zoneinfo import ZoneInfo
 
 from ._media_search import _MediaSearch
 from ._rpc_connection import _RpcConnection
 from .exceptions import InvalidResponseError
 from .models import Recording, Snapshot
+from .parsers.recording import parse_rpc_recordings
 from .parsers.snapshot import parse_rpc_snapshots
 from .playback import RecordingPlayback
 
@@ -25,9 +28,11 @@ class MediaService:
         self,
         connection: _RpcConnection,
         *,
+        timezone: ZoneInfo,
         playback_factory: Callable[[Recording], RecordingPlayback] | None = None,
     ) -> None:
         self._connection = connection
+        self._timezone = timezone
         self._playback_factory = playback_factory
 
     def recordings(
@@ -43,12 +48,15 @@ class MediaService:
 
         if channel < 1:
             raise ValueError("channel must be at least 1")
+        self._validate_search_times(start, end)
 
         return _MediaSearch(
             connection=self._connection,
             channel=channel,
             start=start,
             end=end,
+            timezone=self._timezone,
+            parse_page=partial(parse_rpc_recordings, timezone=self._timezone),
         )
 
     def snapshots(
@@ -62,15 +70,27 @@ class MediaService:
 
         if channel < 1:
             raise ValueError("channel must be at least 1")
+        self._validate_search_times(start, end)
 
         return _MediaSearch(
             connection=self._connection,
             channel=channel,
             start=start,
             end=end,
+            timezone=self._timezone,
             media_type="jpg",
-            parse_page=parse_rpc_snapshots,
+            parse_page=partial(parse_rpc_snapshots, timezone=self._timezone),
         )
+
+    @staticmethod
+    def _validate_search_times(start: datetime, end: datetime) -> None:
+        if (
+            start.tzinfo is None
+            or start.utcoffset() is None
+            or end.tzinfo is None
+            or end.utcoffset() is None
+        ):
+            raise ValueError("media search times must be timezone-aware")
 
     def recording_bytes(self, recording: Recording) -> bytes:
         """Retrieve the stored DAV bytes for a recording."""
