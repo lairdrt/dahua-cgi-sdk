@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from dahua_rpc import DahuaClient, EncodedMediaPacket, MediaTrack
+from dahua_rpc._recorded_bridge import RecordedOutput as ProductionRecordedOutput
 
 HOST = "127.0.0.1"
 PATH = "/recorded"
@@ -1006,7 +1007,7 @@ def _timing_observation(
 
 
 def validate_bridge(playback: Any, *, audio: bool) -> dict[str, Any]:
-    bridge = LocalRtspBridge(playback, include_audio=audio)
+    bridge = ProductionRecordedOutput(playback, include_audio=audio)
     bridge.start()
     try:
         with socket.create_connection(
@@ -1062,14 +1063,9 @@ def validate_bridge(playback: Any, *, audio: bool) -> dict[str, Any]:
                 }
                 for index, media in enumerate(tracks)
             },
-            "queue_dropped": bridge.queue.dropped,
-            "queue_max_depth": bridge.queue.max_depth,
-            "latency_ms": {
-                media: _latency(values)
-                for media, values in bridge.latency_ms.items()
-                if values
-            },
-            "bridge_error": bridge.error,
+            "queue_dropped": bridge.queue_drops,
+            "queue_max_depth": bridge.queue_high_water,
+            "bridge_error": str(bridge.error) if bridge.error else None,
         }
         return result
     finally:
@@ -1086,7 +1082,7 @@ def validate_boundary(
     post_seconds: float = 2.0,
 ) -> dict[str, Any]:
     """Exercise seek and a prepared A-to-B switch on one client connection."""
-    bridge = LocalRtspBridge(outgoing, include_audio=audio)
+    bridge = ProductionRecordedOutput(outgoing, include_audio=audio)
     bridge.start()
     try:
         with socket.create_connection(
@@ -1119,12 +1115,12 @@ def validate_boundary(
             seek_target = max(0.0, (outgoing.duration or 3.0) - 2.0)
             bridge.seek(seek_target)
             sought = _receive_frames(client, 1.0)
-            offset = bridge.prepare_transition(
+            offset = bridge.prepare(
                 incoming,
-                master_time=master_time,
+                target_time=master_time,
                 recording_start=incoming_start,
             )
-            handoff = bridge.activate_transition()
+            handoff = bridge.activate_prepared()
             transitioned = _receive_frames(client, post_seconds)
             cseq += 1
             teardown_error = None
@@ -1144,7 +1140,11 @@ def validate_boundary(
             "sdp": sdp.decode(),
             "seek_target_seconds": seek_target,
             "incoming_npt_seconds": offset,
-            "handoff": handoff,
+            "handoff": {
+                "readiness_seconds": handoff.readiness_seconds,
+                "buffered_packets": handoff.buffered_packets,
+                "activation_seconds": handoff.activation_seconds,
+            },
             "seek_continuity": {
                 media: _continuity(baseline, sought, index * 2)
                 for index, media in enumerate(tracks)
@@ -1161,20 +1161,15 @@ def validate_boundary(
                 for index, media in enumerate(tracks)
             },
             "queue": {
-                "capacity": bridge.queue.capacity,
-                "dropped": bridge.queue.dropped,
-                "max_depth": bridge.queue.max_depth,
+                "capacity": QUEUE_CAPACITY,
+                "dropped": bridge.queue_drops,
+                "max_depth": bridge.queue_high_water,
             },
             "timing": _timing_observation(transitioned, bridge.tracks),
-            "latency_ms": {
-                media: _latency(values)
-                for media, values in bridge.latency_ms.items()
-                if values
-            },
             "downstream_session": bridge.session,
             "teardown_clean": teardown_error is None,
             "teardown_error": teardown_error,
-            "bridge_error": bridge.error,
+            "bridge_error": str(bridge.error) if bridge.error else None,
         }
     finally:
         bridge.close()
@@ -1232,12 +1227,18 @@ def main() -> None:
                 )
             master_time = recording_b.start_time
             print("live phase: video-only boundary", file=sys.stderr, flush=True)
+            requested_video_run = float(
+                os.environ.get("BRIDGE_VIDEO_LONG_RUN_SECONDS", "2")
+            )
             video = validate_boundary(
                 client.media.playback(recording_a),
                 client.media.playback(recording_b),
                 incoming_start=recording_b.start_time,
                 master_time=master_time,
                 audio=False,
+                post_seconds=min(requested_video_run, max(2.0, (
+                    recording_b.end_time - master_time
+                ).total_seconds() - 1.0)),
             )
             print("live phase: dual-track boundary", file=sys.stderr, flush=True)
             requested_long_run = float(

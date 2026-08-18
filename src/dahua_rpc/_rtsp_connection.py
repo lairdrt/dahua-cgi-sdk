@@ -201,7 +201,10 @@ class _RtspStream:
     def _read_loop(self) -> None:
         try:
             while not self._stop.is_set():
-                packet = self._interleaved()
+                try:
+                    packet = self._interleaved()
+                except socket.timeout:
+                    continue
                 if packet is not None:
                     with self._condition:
                         if len(self._media) == self._media_capacity:

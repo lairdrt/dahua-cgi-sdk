@@ -55,6 +55,18 @@ class RtspStreamMultiplexingTests(TestCase):
         self.assertEqual(self.stream.media_queue_drops, 2)
         self.assertEqual(self.stream.media_queue_high_water, 4)
 
+    def test_timeout_while_completing_split_frame_is_not_fatal(self) -> None:
+        frame = _frame(0, b"split payload")
+        self.server.sendall(frame[:2])
+        time.sleep(0.3)
+
+        self.assertTrue(self.stream._reader.is_alive())
+        self.server.sendall(frame[2:])
+
+        packets = self.stream.media_packets(1.0, {0: ("video", "rtp")})
+        self.assertEqual([packet.data for packet in packets], [b"split payload"])
+        self.assertIsNone(self.stream._error)
+
     def test_missing_cseq_fails_pending_request(self) -> None:
         pending = self.stream.register(1)
         self.server.sendall(_response(None))

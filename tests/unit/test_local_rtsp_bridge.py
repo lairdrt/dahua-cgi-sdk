@@ -1,19 +1,23 @@
 import base64
+import socket
+import time
 from datetime import datetime, timezone
 from unittest import TestCase
 
 from dahua_rpc import EncodedMediaPacket, MediaTrack
-from tools.probe_local_rtsp_bridge import (
-    BoundedPacketQueue,
-    CodecCompatibilityError,
-    LocalRtspBridge,
+from dahua_rpc._recorded_bridge import (
     OutboundPacket,
-    ParameterSetCache,
-    RtpContinuityMapper,
-    _require_compatible,
-    _track_configurations,
+    RecordedOutput,
+    _OutboundQueue,
     build_sdp,
+)
+from dahua_rpc._rtp_continuity import (
+    CodecCompatibilityError,
+    CodecConfigurationCache,
+    RtpContinuityMapper,
+    require_compatible,
     rewrite_rtcp,
+    track_configurations,
 )
 
 
@@ -123,7 +127,7 @@ class CodecInitializationTests(TestCase):
              f"{_b64(sps)},{_b64(pps)}",),
         )
 
-        initialization = ParameterSetCache((track,)).get("video")
+        initialization = CodecConfigurationCache((track,)).get("video")
 
         self.assertIsNotNone(initialization)
         assert initialization is not None
@@ -139,7 +143,7 @@ class CodecInitializationTests(TestCase):
              f"sprop-pps={_b64(pps)}",),
         )
 
-        initialization = ParameterSetCache((track,)).get("video")
+        initialization = CodecConfigurationCache((track,)).get("video")
 
         self.assertIsNotNone(initialization)
         assert initialization is not None
@@ -148,13 +152,13 @@ class CodecInitializationTests(TestCase):
     def test_payload_type_may_change_but_initialization_may_not(self) -> None:
         fmtp_96 = ("96 sprop-parameter-sets=Z2QAHw==,aO48gA==",)
         fmtp_112 = ("112 sprop-parameter-sets=Z2QAHw==,aO48gA==",)
-        established = _track_configurations((_video_track("H264", 96, fmtp_96),))
+        established = track_configurations((_video_track("H264", 96, fmtp_96),))
 
-        _require_compatible(
+        require_compatible(
             established, (_video_track("H264", 112, fmtp_112),)
         )
         with self.assertRaisesRegex(CodecCompatibilityError, "incompatible video"):
-            _require_compatible(
+            require_compatible(
                 established,
                 (_video_track(
                     "H264", 112,
@@ -167,13 +171,13 @@ class CodecInitializationTests(TestCase):
             "H264", 96,
             ("96 sprop-parameter-sets=Z2QAHw==,aO48gA==",),
         ),))
-        mapper = bridge.mappers["video"]
+        mapper = bridge._mappers["video"]
         mapper.next_sequence = 10
         bridge._begin_discontinuity(1.0)
 
         bridge._process_packet(_packet("video", 1, 9000, 99, 1.1))
 
-        packets = [bridge.queue.get(0) for _ in range(4)]
+        packets = [bridge._queue.get(0) for _ in range(4)]
         self.assertEqual([item.packet_type for item in packets], [
             "rtp", "rtp", "rtcp", "rtp",
         ])
@@ -193,10 +197,10 @@ class PreparedTransitionTests(TestCase):
         tracks = _tracks_with_initialization()
         outgoing = _FakePlayback(tracks, [])
         bridge = _configured_bridge(tracks, outgoing)
-        video_before = bridge.mappers["video"].rewrite(
+        video_before = bridge._mappers["video"].rewrite(
             _packet("video", 1, 9000, 1, 1.0)
         )
-        audio_before = bridge.mappers["audio"].rewrite(
+        audio_before = bridge._mappers["audio"].rewrite(
             _packet("audio", 1, 800, 2, 1.0)
         )
         incoming = _FakePlayback(tracks, [[
@@ -205,19 +209,19 @@ class PreparedTransitionTests(TestCase):
         ]])
         boundary = datetime(2026, 8, 17, 16, 0, tzinfo=timezone.utc)
 
-        offset = bridge.prepare_transition(
+        offset = bridge.prepare(
             incoming,
-            master_time=boundary,
+            target_time=boundary,
             recording_start=boundary,
         )
-        result = bridge.activate_transition()
+        result = bridge.activate_prepared()
 
         self.assertEqual(offset, 0.0)
         self.assertTrue(outgoing.closed)
-        self.assertIs(bridge.playback, incoming)
-        self.assertEqual(set(result["readiness_seconds"]), {"video", "audio"})
+        self.assertIs(bridge._playback, incoming)
+        self.assertEqual(set(result.readiness_seconds), {"video", "audio"})
         queued = []
-        while (item := bridge.queue.get(0)) is not None:
+        while (item := bridge._queue.get(0)) is not None:
             queued.append(item)
         video_after = next(
             item.data for item in reversed(queued)
@@ -252,13 +256,13 @@ class PreparedTransitionTests(TestCase):
         bridge = _configured_bridge(tracks, _FakePlayback(tracks, []))
         incoming = _FakePlayback(tracks, [packets])
         boundary = datetime(2026, 8, 17, tzinfo=timezone.utc)
-        bridge.prepare_transition(
-            incoming, master_time=boundary, recording_start=boundary
+        bridge.prepare(
+            incoming, target_time=boundary, recording_start=boundary
         )
 
-        result = bridge.activate_transition()
+        result = bridge.activate_prepared()
 
-        self.assertEqual(result["buffered_packets"], 256)
+        self.assertEqual(result.buffered_packets, 256)
 
     def test_incompatible_boundary_is_closed_and_rejected(self) -> None:
         tracks = (_video_track(
@@ -275,8 +279,8 @@ class PreparedTransitionTests(TestCase):
         boundary = datetime(2026, 8, 17, tzinfo=timezone.utc)
 
         with self.assertRaises(CodecCompatibilityError):
-            bridge.prepare_transition(
-                incoming, master_time=boundary, recording_start=boundary
+            bridge.prepare(
+                incoming, target_time=boundary, recording_start=boundary
             )
 
         self.assertTrue(incoming.closed)
@@ -284,11 +288,11 @@ class PreparedTransitionTests(TestCase):
 
 class QueueAndSdpTests(TestCase):
     def test_queue_drops_oldest_at_fixed_capacity(self) -> None:
-        queue = BoundedPacketQueue(2)
+        queue = _OutboundQueue(2)
         for value in (b"one", b"two", b"three"):
             queue.put(OutboundPacket("video", "rtp", 1.0, value))
 
-        self.assertEqual(queue.dropped, 1)
+        self.assertEqual(queue.drops, 1)
         self.assertEqual(queue.get(0).data, b"two")
         self.assertEqual(queue.get(0).data, b"three")
 
@@ -317,13 +321,62 @@ class QueueAndSdpTests(TestCase):
     def test_video_only_bridge_does_not_advertise_discovered_audio(self) -> None:
         playback = type("Playback", (), {"media_tracks": _tracks()})()
 
-        video_only = LocalRtspBridge(playback)
-        dual = LocalRtspBridge(playback, include_audio=True)
+        video_only = RecordedOutput(playback)
+        dual = RecordedOutput(playback, include_audio=True)
 
         self.assertEqual([track.media_type for track in video_only.tracks], ["video"])
         self.assertEqual(
             [track.media_type for track in dual.tracks], ["video", "audio"]
         )
+
+
+class ServerLifecycleTests(TestCase):
+    def test_non_loopback_bind_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "loopback"):
+            RecordedOutput(_FakePlayback(_tracks(), []), host="0.0.0.0")
+
+    def test_describe_hides_upstream_control_and_close_stops_workers(self) -> None:
+        playback = _FakePlayback(_tracks_with_initialization(), [])
+        output = RecordedOutput(playback)
+        output.start()
+        client = socket.create_connection(("127.0.0.1", _port(output.url)))
+        client.sendall(
+            f"DESCRIBE {output.url} RTSP/1.0\r\nCSeq: 1\r\n\r\n".encode()
+        )
+
+        response = client.recv(4096)
+
+        self.assertIn(b"RTSP/1.0 200", response)
+        self.assertIn(b"a=control:trackID=video", response)
+        self.assertNotIn(b"upstream", response)
+        client.close()
+        _wait_for(lambda: output._client is None)
+        output.close()
+        self.assertTrue(playback.closed)
+        self.assertTrue(all(not thread.is_alive() for thread in output._threads))
+
+    def test_prepared_session_can_be_aborted(self) -> None:
+        output = _configured_bridge(_tracks())
+        prepared = _FakePlayback(_tracks(), [])
+        boundary = datetime(2026, 8, 17, tzinfo=timezone.utc)
+        output.prepare(
+            prepared, target_time=boundary, recording_start=boundary
+        )
+
+        output.abort_prepared()
+
+        self.assertTrue(prepared.closed)
+        self.assertIsNone(output._prepared)
+
+    def test_close_records_upstream_cleanup_error_without_leaking_it(self) -> None:
+        playback = _FakePlayback(_tracks(), [])
+        output = _configured_bridge(_tracks(), playback)
+        playback.close_error = RuntimeError("teardown failed")
+
+        output.close()
+
+        self.assertIsInstance(output.error, RuntimeError)
+        self.assertEqual(str(output.error), "teardown failed")
 
 
 def _packet(
@@ -385,16 +438,20 @@ def _b64(value: bytes) -> str:
 
 def _configured_bridge(
     tracks: tuple[MediaTrack, ...], playback: object | None = None
-) -> LocalRtspBridge:
+) -> RecordedOutput:
     selected = playback or _FakePlayback(tracks, [])
-    bridge = LocalRtspBridge(selected, include_audio=any(
+    bridge = RecordedOutput(selected, include_audio=any(
         track.media_type == "audio" for track in tracks
     ))
     bridge._tracks = tracks
-    bridge.configurations = _track_configurations(tracks)
-    bridge.parameter_sets = ParameterSetCache(tracks)
-    bridge.mappers = {
-        track.media_type: RtpContinuityMapper(track.clock_rate or 1, ssrc=index)
+    bridge._configurations = track_configurations(tracks)
+    bridge._cache = CodecConfigurationCache(tracks)
+    bridge._mappers = {
+        track.media_type: RtpContinuityMapper(
+            track.clock_rate or 1,
+            payload_type=track.payload_type,
+            ssrc=index,
+        )
         for index, track in enumerate(tracks, start=1)
     }
     return bridge
@@ -414,6 +471,7 @@ class _FakePlayback:
         self.started = False
         self.paused = False
         self.seek_seconds: float | None = None
+        self.close_error: Exception | None = None
 
     def start(self) -> None:
         self.started = True
@@ -433,6 +491,8 @@ class _FakePlayback:
 
     def close(self) -> None:
         self.closed = True
+        if self.close_error is not None:
+            raise self.close_error
 
 
 def _sender_report(ssrc: int, timestamp: int) -> bytes:
@@ -455,3 +515,17 @@ def _timestamp(data: bytes) -> int:
 
 def _ssrc(data: bytes) -> int:
     return int.from_bytes(data[8:12], "big")
+
+
+def _port(url: str) -> int:
+    return int(url.split(":", 2)[2].split("/", 1)[0])
+
+
+def _wait_for(predicate: object) -> None:
+    assert callable(predicate)
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition was not reached")

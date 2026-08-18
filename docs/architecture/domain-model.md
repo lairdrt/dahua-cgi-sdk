@@ -1,5 +1,8 @@
 # Major Domain Concepts and their Relationships
 
+Recorded playback transport and its private loopback presentation are described
+in [Recorded Playback Internals](recorded-playback.md).
+
 # Simplified Domain Model
 
 - Recorder: represented by DahuaClient
