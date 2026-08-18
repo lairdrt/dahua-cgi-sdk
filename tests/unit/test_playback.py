@@ -1,3 +1,4 @@
+import re
 import socket
 from datetime import datetime
 from unittest import TestCase
@@ -304,7 +305,12 @@ class _ScriptedSocket:
     def sendall(self, request: bytes) -> None:
         self.sent.append(request)
         if self.replies:
-            self.incoming.extend(self.replies.pop(0))
+            reply = self.replies.pop(0)
+            cseq = re.search(rb"\r\nCSeq: (\d+)\r\n", request).group(1)
+            if reply.startswith(b"RTSP/") and b"\r\nCSeq:" not in reply:
+                line, remainder = reply.split(b"\r\n", 1)
+                reply = line + b"\r\nCSeq: " + cseq + b"\r\n" + remainder
+            self.incoming.extend(reply)
 
     def recv(self, count: int) -> bytes:
         if not self.incoming:

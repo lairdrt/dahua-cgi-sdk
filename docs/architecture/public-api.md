@@ -86,7 +86,9 @@ stored snapshot's JPEG with `client.media.snapshot_bytes(snapshot)`.
 indexed `Recording.file_path`. It supports `start()`, `pause()`, `resume()`,
 absolute `seek(seconds)`, relative `seek_relative(delta_seconds)`, read-only
 NPT `position`, synchronous RTP observation with `receive(duration)`, and
-`close()`/context-manager cleanup.
+`close()`/context-manager cleanup. The transport maintains the recorder's RTSP
+Session internally during both playing and paused playback; callers do not send
+keepalive requests.
 
 RPC2 performs media indexing and search. `RPC_Loadfile` explicitly exports
 indexed DAV and JPG files. RTSP performs recorded playback directly from the
