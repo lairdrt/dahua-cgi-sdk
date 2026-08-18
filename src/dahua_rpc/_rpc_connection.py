@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections.abc import Mapping
 from typing import Any
 
@@ -18,6 +19,9 @@ from .exceptions import (
 )
 
 _LOGIN_CHALLENGE_ERROR = 268632079
+_KEEPALIVE_REQUEST_TIMEOUT = 300
+_DEFAULT_KEEPALIVE_INTERVAL = 30.0
+_KEEPALIVE_TIMEOUT_FRACTION = 0.5
 
 
 class _RpcConnection:
@@ -32,6 +36,7 @@ class _RpcConnection:
         password: str,
         timeout: float,
         use_ssl: bool,
+        keepalive_interval: float | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -41,8 +46,19 @@ class _RpcConnection:
         scheme = "https" if use_ssl else "http"
         self._base_url = f"{scheme}://{host}:{port}"
         self._http = Session()
+        if keepalive_interval is not None and keepalive_interval <= 0:
+            raise ValueError("keepalive_interval must be greater than zero")
+        self._lock = threading.RLock()
         self._request_id = 0
         self._session: str | None = None
+        self._session_error: Exception | None = None
+        self._keepalive_interval_override = keepalive_interval
+        self._keepalive_interval = keepalive_interval or _DEFAULT_KEEPALIVE_INTERVAL
+        self._keepalive_stop = threading.Event()
+        self._keepalive_thread: threading.Thread | None = None
+        self.keepalive_count = 0
+        self.keepalive_statuses: list[int] = []
+        self.keepalive_transient_failures = 0
 
     def call(
         self,
@@ -53,19 +69,26 @@ class _RpcConnection:
     ) -> dict[str, Any]:
         """Call an RPC method, logging in on first use."""
 
-        if self._session is None:
-            self.login()
-        return self._post(
-            "/RPC2",
-            method,
-            params,
-            object_id=object_id,
-            include_session=True,
-        )
+        with self._lock:
+            if self._session_error is not None:
+                raise self._session_error
+            if self._session is None:
+                self._login_locked()
+            return self._post(
+                "/RPC2",
+                method,
+                params,
+                object_id=object_id,
+                include_session=True,
+            )
 
     def login(self) -> None:
         """Establish the recorder's two-stage Default RPC session."""
 
+        with self._lock:
+            self._login_locked()
+
+    def _login_locked(self) -> None:
         if self._session is not None:
             return
         challenge = self._post(
@@ -116,6 +139,8 @@ class _RpcConnection:
             raise
         if returned_session := response.get("session"):
             self._session = str(returned_session)
+        self._session_error = None
+        self._start_keepalive()
 
     def get(self, path: str, *, stream: bool = False) -> Response:
         """Perform an HTTP Digest GET using the connection credentials."""
@@ -125,34 +150,97 @@ class _RpcConnection:
         }
         if stream:
             kwargs["stream"] = True
-        return self._request(
-            "GET",
-            path,
-            **kwargs,
-        )
+        with self._lock:
+            return self._request(
+                "GET",
+                path,
+                **kwargs,
+            )
 
     def logout(self) -> None:
         """Log out the current RPC session, if one exists."""
 
-        if self._session is None:
-            return
-        try:
-            self._post(
-                "/RPC2",
-                "global.logout",
-                None,
-                include_session=True,
-            )
-        finally:
-            self._session = None
+        self.stop_keepalive()
+        with self._lock:
+            if self._session is None:
+                return
+            try:
+                self._post(
+                    "/RPC2",
+                    "global.logout",
+                    None,
+                    include_session=True,
+                )
+            finally:
+                self._session = None
+                self._session_error = None
 
     def close(self) -> None:
         """Log out and release HTTP resources."""
 
+        self.stop_keepalive()
         try:
             self.logout()
         finally:
-            self._http.close()
+            with self._lock:
+                self._http.close()
+
+    def stop_keepalive(self) -> None:
+        """Stop RPC session maintenance before client resource cleanup."""
+
+        thread = self._keepalive_thread
+        self._keepalive_thread = None
+        self._keepalive_stop.set()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=self._timeout + 1.0)
+
+    def _start_keepalive(self) -> None:
+        if self._keepalive_thread is not None:
+            return
+        self._keepalive_stop.clear()
+        self._keepalive_thread = threading.Thread(
+            name="dahua-rpc-keepalive", target=self._keepalive_loop
+        )
+        self._keepalive_thread.start()
+
+    def _keepalive_loop(self) -> None:
+        while not self._keepalive_stop.wait(self._keepalive_interval):
+            try:
+                with self._lock:
+                    if self._session is None:
+                        return
+                    response = self._post(
+                        "/RPC2",
+                        "global.keepAlive",
+                        {
+                            "timeout": _KEEPALIVE_REQUEST_TIMEOUT,
+                            "active": True,
+                        },
+                        include_session=True,
+                    )
+                    self._update_keepalive_interval(response)
+                    self.keepalive_count += 1
+                    self.keepalive_statuses.append(200)
+            except (RecorderConnectionError, TransportError):
+                self.keepalive_transient_failures += 1
+                continue
+            except (AuthenticationError, InvalidResponseError):
+                with self._lock:
+                    self._session_error = InvalidResponseError(
+                        "RPC session keepalive was rejected by the recorder."
+                    )
+                return
+
+    def _update_keepalive_interval(self, response: Mapping[str, Any]) -> None:
+        if self._keepalive_interval_override is not None:
+            return
+        params = response.get("params")
+        if not isinstance(params, Mapping):
+            return
+        timeout = params.get("timeout")
+        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool):
+            if timeout > 0:
+                self._keepalive_interval = timeout * _KEEPALIVE_TIMEOUT_FRACTION
 
     def _challenge_response(self, realm: str, random_value: str) -> str:
         ha1 = hashlib.md5(

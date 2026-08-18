@@ -98,6 +98,10 @@ Camera inventory, state, and stream metadata remain RPC2-backed. Live camera
 video and recorded playback share the RTSP/Digest/TCP-interleaved transport.
 `RPC_Loadfile` is restricted to explicit indexed-file export.
 
+The client maintains its authenticated RPC2 control session internally and
+independently from each RTSP media Session. Closing the client stops RPC2
+maintenance before closing active media sessions and logging out.
+
 ### Storage
 
 `client.storage.disks()`

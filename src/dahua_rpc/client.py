@@ -203,6 +203,7 @@ class DahuaClient:
 
     def close(self) -> None:
         """Release underlying HTTP resources."""
+        self._rpc_connection.stop_keepalive()
         for playback in tuple(self._playbacks):
             try:
                 playback.close()

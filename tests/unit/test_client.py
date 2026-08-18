@@ -54,6 +54,28 @@ class DahuaClientRpcIntegrationTests(TestCase):
         rpc_type.return_value.close.assert_called_once_with()
 
     @patch("dahua_rpc.client._RpcConnection")
+    def test_close_stops_rpc_keepalive_before_resources_and_logout(
+        self, rpc_type: Mock
+    ) -> None:
+        rpc = rpc_type.return_value
+        rpc.call.side_effect = _identity_responses()
+        events: list[str] = []
+        rpc.stop_keepalive.side_effect = lambda: events.append("stop_keepalive")
+        rpc.close.side_effect = lambda: events.append("rpc_close")
+        client = DahuaClient(
+            host="recorder.example", username="admin", password="password"
+        )
+        playback = Mock()
+        playback.close.side_effect = lambda: events.append("playback_close")
+        client._playbacks.add(playback)
+
+        client.close()
+
+        self.assertEqual(
+            events, ["stop_keepalive", "playback_close", "rpc_close"]
+        )
+
+    @patch("dahua_rpc.client._RpcConnection")
     def test_current_time_is_recorder_timezone_aware(self, rpc_type: Mock) -> None:
         rpc = rpc_type.return_value
         rpc.call.side_effect = _identity_responses() + [
