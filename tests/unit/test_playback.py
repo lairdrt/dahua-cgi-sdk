@@ -11,7 +11,7 @@ from dahua_rpc.exceptions import (
     RecorderConnectionError,
     TransportError,
 )
-from dahua_rpc.models import Recording
+from dahua_rpc.models import EncodedMediaPacket, Recording
 from dahua_rpc.playback import RecordingPlayback, RtpReceipt
 
 
@@ -133,6 +133,14 @@ class PlaybackStateTests(TestCase):
         self.connection.pause.return_value = None
         self.connection.play.return_value = None
         self.connection.receive.return_value = _MediaReceipt(2, 100, 10, 20)
+        self.packet = EncodedMediaPacket(
+            media_type="video",
+            packet_type="rtp",
+            interleaved_channel=0,
+            arrival_time=1.0,
+            data=b"rtp",
+        )
+        self.connection.receive_packets.return_value = (self.packet,)
         self.closed = Mock()
         self.playback = RecordingPlayback(
             self.connection, _recording(), on_close=self.closed
@@ -154,6 +162,7 @@ class PlaybackStateTests(TestCase):
             self.playback.resume,
             lambda: self.playback.seek(1),
             self.playback.receive,
+            self.playback.receive_packets,
         ):
             with self.subTest(operation=operation):
                 with self.assertRaises(PlaybackStateError):
@@ -165,6 +174,22 @@ class PlaybackStateTests(TestCase):
             self.playback.start()
         with self.assertRaises(ValueError):
             self.playback.seek(51)
+
+    def test_encoded_packets_remain_available_after_resume_and_seek(self) -> None:
+        self.playback.start()
+        self.assertEqual(self.playback.receive_packets(0.25), (self.packet,))
+        self.connection.receive_packets.assert_called_with(0.25)
+        self.playback.pause()
+        with self.assertRaises(PlaybackStateError):
+            self.playback.receive_packets()
+        self.playback.resume()
+        self.playback.seek(25)
+        self.assertEqual(self.playback.receive_packets(), (self.packet,))
+
+    def test_encoded_packet_duration_is_validated(self) -> None:
+        self.playback.start()
+        with self.assertRaises(ValueError):
+            self.playback.receive_packets(0)
 
     def test_close_is_idempotent_and_operations_after_close_fail(self) -> None:
         self.playback.start()

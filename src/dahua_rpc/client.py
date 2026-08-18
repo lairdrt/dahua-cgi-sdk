@@ -332,14 +332,21 @@ class DahuaClient:
             return value or None
         return None
 
-    def _create_playback(self, recording: Recording) -> RecordingPlayback:
+    def _create_playback(
+        self, recording: Recording, audio: bool = False
+    ) -> RecordingPlayback:
+        connection_options = {
+            "host": self._host,
+            "port": 554,
+            "username": self._username,
+            "password": self._password,
+            "timeout": self._timeout,
+            "file_path": recording.file_path,
+        }
+        if audio:
+            connection_options["include_audio"] = True
         connection = _RtspConnection(
-            host=self._host,
-            port=554,
-            username=self._username,
-            password=self._password,
-            timeout=self._timeout,
-            file_path=recording.file_path,
+            **connection_options,
         )
         playback = RecordingPlayback(
             connection,

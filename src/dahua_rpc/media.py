@@ -29,7 +29,9 @@ class MediaService:
         connection: _RpcConnection,
         *,
         timezone: ZoneInfo,
-        playback_factory: Callable[[Recording], RecordingPlayback] | None = None,
+        playback_factory: (
+            Callable[[Recording, bool], RecordingPlayback] | None
+        ) = None,
     ) -> None:
         self._connection = connection
         self._timezone = timezone
@@ -106,12 +108,14 @@ class MediaService:
 
         return response.content
 
-    def playback(self, recording: Recording) -> RecordingPlayback:
-        """Create an RTSP playback session for an indexed recording."""
+    def playback(
+        self, recording: Recording, *, audio: bool = False
+    ) -> RecordingPlayback:
+        """Create playback, optionally requesting its discovered audio track."""
 
         if self._playback_factory is None:
             raise RuntimeError("Recorded playback is not configured.")
-        return self._playback_factory(recording)
+        return self._playback_factory(recording, audio)
 
     def snapshot_bytes(self, snapshot: Snapshot) -> bytes:
         """Retrieve and validate the JPEG bytes for a stored snapshot."""

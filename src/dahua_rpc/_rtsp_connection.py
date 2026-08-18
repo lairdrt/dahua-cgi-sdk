@@ -17,6 +17,7 @@ from .exceptions import (
     RecorderConnectionError,
     TransportError,
 )
+from .models import EncodedMediaPacket, MediaTrack, RtcpPacketInfo
 
 _MAX_MESSAGE_BYTES = 256 * 1024
 
@@ -35,9 +36,8 @@ class _RtspResponse:
 
 
 @dataclass(frozen=True, slots=True)
-class _SdpVideo:
-    control: str
-    codec: str | None
+class _SdpDescription:
+    tracks: tuple[MediaTrack, ...]
     duration: float | None
 
 
@@ -139,11 +139,27 @@ class _RtspStream:
             raise TransportError("RTSP transport failed while receiving data.") from exc
 
     def media(self, duration: float) -> _MediaReceipt:
+        packets = self.media_packets(duration, {0: ("video", "rtp")})
+        video = [packet for packet in packets if packet.packet_type == "rtp"]
+        timestamps = [
+            packet.rtp_timestamp
+            for packet in video
+            if packet.rtp_timestamp is not None
+        ]
+        return _MediaReceipt(
+            len(video),
+            sum(len(packet.data) for packet in video),
+            timestamps[0] if timestamps else None,
+            timestamps[-1] if timestamps else None,
+        )
+
+    def media_packets(
+        self,
+        duration: float,
+        channels: dict[int, tuple[str, str]],
+    ) -> tuple[EncodedMediaPacket, ...]:
         deadline = time.monotonic() + duration
-        packets = 0
-        byte_count = 0
-        first_timestamp: int | None = None
-        last_timestamp: int | None = None
+        packets: list[EncodedMediaPacket] = []
         while time.monotonic() < deadline:
             try:
                 packet = self._interleaved(deadline)
@@ -159,16 +175,20 @@ class _RtspStream:
             except OSError as exc:
                 raise TransportError("RTSP media transport failed.") from exc
             channel, payload = packet
-            if channel != 0 or not payload:
+            identity = channels.get(channel)
+            if identity is None or not payload:
                 continue
-            packets += 1
-            byte_count += len(payload)
-            if len(payload) >= 12 and payload[0] >> 6 == 2:
-                timestamp = int.from_bytes(payload[4:8], "big")
-                if first_timestamp is None:
-                    first_timestamp = timestamp
-                last_timestamp = timestamp
-        return _MediaReceipt(packets, byte_count, first_timestamp, last_timestamp)
+            media_type, packet_type = identity
+            packets.append(
+                _parse_media_packet(
+                    media_type,
+                    packet_type,
+                    channel,
+                    time.monotonic(),
+                    payload,
+                )
+            )
+        return tuple(packets)
 
 
 class _DigestState:
@@ -203,6 +223,7 @@ class _RtspConnection:
         file_path: str | None = None,
         target_path: str | None = None,
         initial_range: str | None = "npt=0-",
+        include_audio: bool = False,
         connector: Callable[..., socket.socket] = socket.create_connection,
     ) -> None:
         if (file_path is None) == (target_path is None):
@@ -216,6 +237,7 @@ class _RtspConnection:
         path = f"/{file_path}" if file_path is not None else target_path
         self.target = f"rtsp://{host}:{port}{path}"
         self._initial_range = initial_range
+        self._include_audio = include_audio
         self._socket: socket.socket | None = None
         self._stream: _RtspStream | None = None
         self._digest: _DigestState | None = None
@@ -223,6 +245,8 @@ class _RtspConnection:
         self.session: str | None = None
         self.video_control: str | None = None
         self.video_codec: str | None = None
+        self.media_tracks: tuple[MediaTrack, ...] = ()
+        self._media_channels: dict[int, tuple[str, str]] = {}
         self.duration: float | None = None
         self.returned_range: str | None = None
 
@@ -240,29 +264,17 @@ class _RtspConnection:
         self._stream = _RtspStream(self._socket)
         try:
             describe = self._initial_describe()
-            video = _parse_sdp_video(describe.body)
+            description = _parse_sdp(describe.body)
+            video = _require_track(description.tracks, "video")
+            selected = [video]
+            if self._include_audio:
+                selected.append(_require_track(description.tracks, "audio"))
+            self.media_tracks = description.tracks
             self.video_control = video.control
             self.video_codec = video.codec
-            self.duration = video.duration
-            track_uri = _control_uri(
-                self.target, describe.header("Content-Base"), video.control
-            )
-            setup = self._request(
-                "SETUP",
-                track_uri,
-                (("Transport", "RTP/AVP/TCP;unicast;interleaved=0-1"),),
-            )
-            self._require_ok("SETUP", setup)
-            transport = setup.header("Transport")
-            if transport is None or "interleaved=0-1" not in transport.casefold():
-                raise InvalidResponseError(
-                    "SETUP did not confirm interleaved RTP transport."
-                )
-            session_header = setup.header("Session")
-            session = session_header.partition(";")[0].strip() if session_header else ""
-            if not session:
-                raise InvalidResponseError("SETUP omitted a usable RTSP Session.")
-            self.session = session
+            self.duration = description.duration
+            for index, track in enumerate(selected):
+                self._setup_track(describe, track, index * 2)
             play_headers = (
                 (("Range", self._initial_range),)
                 if self._initial_range is not None
@@ -293,6 +305,41 @@ class _RtspConnection:
         if self._stream is None:
             raise InvalidResponseError("RTSP stream is not established.")
         return self._stream.media(duration)
+
+    def receive_packets(self, duration: float) -> tuple[EncodedMediaPacket, ...]:
+        if self._stream is None:
+            raise InvalidResponseError("RTSP stream is not established.")
+        return self._stream.media_packets(duration, self._media_channels)
+
+    def _setup_track(
+        self, describe: _RtspResponse, track: MediaTrack, rtp_channel: int
+    ) -> None:
+        channels = f"{rtp_channel}-{rtp_channel + 1}"
+        track_uri = _control_uri(
+            self.target, describe.header("Content-Base"), track.control
+        )
+        headers: tuple[tuple[str, str], ...] = (
+            ("Transport", f"RTP/AVP/TCP;unicast;interleaved={channels}"),
+        )
+        if self.session is not None:
+            headers = (("Session", self.session), *headers)
+        setup = self._request("SETUP", track_uri, headers)
+        self._require_ok("SETUP", setup)
+        transport = setup.header("Transport")
+        if transport is None or f"interleaved={channels}" not in transport.casefold():
+            raise InvalidResponseError(
+                f"SETUP did not confirm interleaved channels {channels}."
+            )
+        session_header = setup.header("Session")
+        returned = session_header.partition(";")[0].strip() if session_header else ""
+        if self.session is None:
+            if not returned:
+                raise InvalidResponseError("SETUP omitted a usable RTSP Session.")
+            self.session = returned
+        elif returned and returned != self.session:
+            raise InvalidResponseError("SETUP changed the RTSP Session.")
+        self._media_channels[rtp_channel] = (track.media_type, "rtp")
+        self._media_channels[rtp_channel + 1] = (track.media_type, "rtcp")
 
     def teardown(self) -> None:
         if self.session is None or self._stream is None:
@@ -478,29 +525,168 @@ def _digest_uri(target: str) -> str:
     return parsed.path + (("?" + parsed.query) if parsed.query else "")
 
 
-def _parse_sdp_video(body: bytes) -> _SdpVideo:
+def _parse_sdp(body: bytes) -> _SdpDescription:
     duration: float | None = None
-    in_video = False
-    control: str | None = None
-    codec: str | None = None
+    sections: list[dict[str, object]] = []
+    current: dict[str, object] | None = None
     for raw_line in body.decode("utf-8", errors="replace").splitlines():
         line = raw_line.strip()
         range_match = re.fullmatch(r"a=range:npt=[^-]*-(\d+(?:\.\d+)?)", line)
         if range_match is not None:
             duration = float(range_match.group(1))
         if line.startswith("m="):
-            in_video = line.startswith("m=video ")
-        elif in_video and line.startswith("a=control:"):
-            value = line.removeprefix("a=control:").strip()
-            if value and value != "*":
-                control = value
-        elif in_video and line.startswith("a=rtpmap:"):
-            mapping = line.partition(" ")[2]
-            if mapping:
-                codec = mapping.partition("/")[0]
-    if control is None:
-        raise InvalidResponseError("SDP omitted a usable video control track.")
-    return _SdpVideo(control, codec, duration)
+            fields = line[2:].split()
+            current = {
+                "media_type": fields[0] if fields else "",
+                "payload_type": fields[3] if len(fields) > 3 else "",
+                "control": None,
+                "rtpmap": None,
+                "fmtp": [],
+                "direction": None,
+            }
+            sections.append(current)
+        elif current is not None and line.startswith("a=control:"):
+            current["control"] = line.removeprefix("a=control:").strip()
+        elif current is not None and line.startswith("a=rtpmap:"):
+            current["rtpmap"] = line.partition(" ")[2]
+        elif current is not None and line.startswith("a=fmtp:"):
+            fmtp = current["fmtp"]
+            assert isinstance(fmtp, list)
+            fmtp.append(line.removeprefix("a=fmtp:").strip())
+        elif current is not None and line in {
+            "a=sendonly",
+            "a=recvonly",
+            "a=sendrecv",
+            "a=inactive",
+        }:
+            current["direction"] = line[2:]
+    tracks = tuple(
+        track
+        for section in sections
+        if (track := _parse_sdp_track(section)) is not None
+    )
+    return _SdpDescription(tracks, duration)
+
+
+def _parse_sdp_track(section: dict[str, object]) -> MediaTrack | None:
+    media_type = section["media_type"]
+    if media_type not in ("video", "audio"):
+        return None
+    control = section["control"]
+    if not isinstance(control, str) or not control or control == "*":
+        return None
+    try:
+        payload_type = int(str(section["payload_type"]))
+    except ValueError:
+        return None
+    codec = None
+    clock_rate = None
+    channels = None
+    mapping = section["rtpmap"]
+    if isinstance(mapping, str) and mapping:
+        parts = mapping.split("/")
+        codec = parts[0] or None
+        try:
+            clock_rate = int(parts[1]) if len(parts) > 1 else None
+            channels = int(parts[2]) if len(parts) > 2 else None
+        except ValueError:
+            clock_rate = None
+            channels = None
+    fmtp = section["fmtp"]
+    assert isinstance(fmtp, list)
+    direction = section["direction"]
+    return MediaTrack(
+        media_type=media_type,
+        control=control,
+        codec=codec,
+        payload_type=payload_type,
+        clock_rate=clock_rate,
+        channels=channels,
+        fmtp=tuple(str(value) for value in fmtp),
+        direction=direction if isinstance(direction, str) else None,
+    )
+
+
+def _require_track(
+    tracks: tuple[MediaTrack, ...], media_type: str
+) -> MediaTrack:
+    track = next((item for item in tracks if item.media_type == media_type), None)
+    if track is None:
+        raise InvalidResponseError(f"SDP omitted a usable {media_type} track.")
+    return track
+
+
+def _parse_media_packet(
+    media_type: str,
+    packet_type: str,
+    channel: int,
+    arrival_time: float,
+    data: bytes,
+) -> EncodedMediaPacket:
+    if packet_type == "rtp":
+        metadata = _parse_rtp(data)
+        return EncodedMediaPacket(
+            media_type=media_type,
+            packet_type="rtp",
+            interleaved_channel=channel,
+            arrival_time=arrival_time,
+            data=data,
+            **metadata,
+        )
+    return EncodedMediaPacket(
+        media_type=media_type,
+        packet_type="rtcp",
+        interleaved_channel=channel,
+        arrival_time=arrival_time,
+        data=data,
+        rtcp_packets=_parse_rtcp(data),
+    )
+
+
+def _parse_rtp(data: bytes) -> dict[str, int | bool | None]:
+    if len(data) < 12 or data[0] >> 6 != 2:
+        return {
+            "payload_type": None,
+            "marker": None,
+            "sequence_number": None,
+            "rtp_timestamp": None,
+            "ssrc": None,
+        }
+    return {
+        "payload_type": data[1] & 0x7F,
+        "marker": bool(data[1] & 0x80),
+        "sequence_number": int.from_bytes(data[2:4], "big"),
+        "rtp_timestamp": int.from_bytes(data[4:8], "big"),
+        "ssrc": int.from_bytes(data[8:12], "big"),
+    }
+
+
+def _parse_rtcp(data: bytes) -> tuple[RtcpPacketInfo, ...]:
+    packets = []
+    offset = 0
+    while offset + 4 <= len(data):
+        if data[offset] >> 6 != 2:
+            return ()
+        packet_type = data[offset + 1]
+        length = (int.from_bytes(data[offset + 2 : offset + 4], "big") + 1) * 4
+        if length < 4 or offset + length > len(data):
+            return ()
+        packet = data[offset : offset + length]
+        ssrc = int.from_bytes(packet[4:8], "big") if len(packet) >= 8 else None
+        if packet_type == 200 and len(packet) >= 20:
+            packets.append(
+                RtcpPacketInfo(
+                    packet_type=packet_type,
+                    ssrc=ssrc,
+                    ntp_seconds=int.from_bytes(packet[8:12], "big"),
+                    ntp_fraction=int.from_bytes(packet[12:16], "big"),
+                    rtp_timestamp=int.from_bytes(packet[16:20], "big"),
+                )
+            )
+        else:
+            packets.append(RtcpPacketInfo(packet_type=packet_type, ssrc=ssrc))
+        offset += length
+    return tuple(packets) if offset == len(data) else ()
 
 
 def _control_uri(aggregate: str, content_base: str | None, control: str) -> str:

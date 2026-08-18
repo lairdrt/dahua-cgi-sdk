@@ -12,7 +12,7 @@ from types import TracebackType
 
 from ._rtsp_connection import _RtspConnection
 from .exceptions import PlaybackStateError
-from .models import Recording
+from .models import EncodedMediaPacket, MediaTrack, Recording
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +69,12 @@ class RecordingPlayback:
     @property
     def returned_range(self) -> str | None:
         return self._connection.returned_range
+
+    @property
+    def media_tracks(self) -> tuple[MediaTrack, ...]:
+        """Media tracks discovered at start; empty before DESCRIBE completes."""
+
+        return self._connection.media_tracks
 
     @property
     def position(self) -> float:
@@ -140,6 +146,20 @@ class RecordingPlayback:
             result.first_timestamp,
             result.last_timestamp,
         )
+
+    def receive_packets(
+        self, duration: float = 1.0
+    ) -> tuple[EncodedMediaPacket, ...]:
+        """Receive ordered encoded packets from this playback's sole reader.
+
+        Calls to ``receive`` and ``receive_packets`` must not overlap. A future
+        fan-out layer may distribute one reader's results to local consumers.
+        """
+
+        self._require(_PlaybackState.PLAYING, operation="receive_packets")
+        if duration <= 0:
+            raise ValueError("duration must be greater than zero")
+        return self._connection.receive_packets(duration)
 
     def close(self) -> None:
         if self._state is _PlaybackState.CLOSED:

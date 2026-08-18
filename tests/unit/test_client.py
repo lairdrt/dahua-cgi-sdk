@@ -118,6 +118,21 @@ class DahuaClientRpcIntegrationTests(TestCase):
 
     @patch("dahua_rpc.client._RtspConnection")
     @patch("dahua_rpc.client._RpcConnection")
+    def test_recorded_audio_is_explicitly_opted_in(
+        self, rpc_type: Mock, rtsp_type: Mock
+    ) -> None:
+        rpc_type.return_value.call.side_effect = _identity_responses()
+        client = DahuaClient(
+            host="recorder.example", username="admin", password="password"
+        )
+        recording = Mock(file_path="/mnt/dvr/recording.dav")
+
+        client.media.playback(recording, audio=True)
+
+        self.assertTrue(rtsp_type.call_args.kwargs["include_audio"])
+
+    @patch("dahua_rpc.client._RtspConnection")
+    @patch("dahua_rpc.client._RpcConnection")
     def test_client_owns_and_closes_created_live_streams(
         self, rpc_type: Mock, rtsp_type: Mock
     ) -> None:
