@@ -350,6 +350,62 @@ git diff --check
 Unit tests use synthetic RPC, SDP, RTP, and RTCP fixtures and do not require
 live hardware. Live probes are separate and opt-in.
 
+## Development approach
+
+The principal development toolset is Python in a project virtual environment
+(`venv`), with pytest for automated tests, Ruff for lint and static checks, Git
+and GitHub for source control, and Visual Studio Code for repository work. The
+AI-assisted development environment used while this README was written includes
+ChatGPT — GPT-5.6 Sol and OpenAI Codex — GPT-5.6 Codex; these tools and model
+versions describe the engineering process, not project dependencies.
+
+Engineering combines unit tests and synthetic protocol/media fixtures with
+opt-in probes against reference hardware. Disposable characterization tools
+under `tools/` test important assumptions before they enter production code,
+including timezone behavior, media search, concurrent and packet-preserving
+playback, DAV boundaries, Main/Extra1 profiles, RTP/RTCP, recorded audio, and
+the local RTSP bridge. Changes are checked with pytest, Ruff, other focused
+static validation, and Git diff/working-tree review. Architecture is refined
+iteratively from those results rather than assumed in advance.
+
+The human engineering role provides project goals and requirements,
+operational experience, system-level judgment, architecture review and
+approval, reference hardware and configuration, hands-on live testing,
+interpretation of desired user behavior, review of tradeoffs and results, and
+the final engineering and product decisions. ChatGPT GPT-5.6 Sol serves
+primarily as an architecture and engineering collaborator: refining
+requirements, identifying uncertainties and tradeoffs, designing and
+interpreting focused experiments, planning implementation increments,
+structuring documentation, and preparing scoped research or implementation
+tasks. OpenAI Codex GPT-5.6 Codex serves primarily as the repository-level
+implementation and verification agent: inspecting the actual checkout,
+implementing approved changes, writing Python and tests, running validation,
+constructing diagnostic probes, performing directed live checks, and reporting
+changed files, evidence, and remaining uncertainty.
+
+```text
+human requirements and engineering judgment
+                    |
+                    v
+architecture and investigation (ChatGPT GPT-5.6 Sol)
+                    |
+                    v
+scoped implementation and probes (OpenAI Codex GPT-5.6 Codex)
+                    |
+                    v
+automated tests and live evidence
+                    |
+                    v
+human review and decision -> next iteration
+```
+
+This is an iterative, human-reviewed engineering loop, not autonomous code
+generation. The project owner does not claim deep Python specialization;
+confidence is instead built through system architecture review, automated
+tests, focused live-hardware experiments, and repeated validation. AI-assisted
+work is not presumed correct, and architectural and product decisions remain
+subject to human review and approval.
+
 ## Diagnostics and research tools
 
 `tools/` contains focused live-hardware experiments rather than stable public
