@@ -27,6 +27,205 @@ LOOPBACK_HOST = "127.0.0.1"
 LOGICAL_PATH = "/recorded"
 HANDOFF_TIMEOUT = 1.5
 HANDOFF_PACKET_LIMIT = 256
+STARTUP_TIMEOUT = 30.0
+STARTUP_PACKET_LIMIT = 2048
+STARTUP_AUDIO_PACKET_LIMIT = 256
+H265_IRAP_TYPES = frozenset(range(16, 22))
+
+
+class StartupTimeoutError(RuntimeError):
+    """A downstream client did not receive a decoder-startable access unit."""
+
+
+@dataclass(frozen=True, slots=True)
+class _VideoPacketInfo:
+    timestamp: int
+    sequence: int
+    marker: bool
+    keyframe: bool
+    keyframe_fragment: tuple[bool, bool] | None = None
+
+
+def _video_packet_info(codec: str, data: bytes) -> _VideoPacketInfo | None:
+    """Return the minimum RTP/NAL information needed by the startup gate."""
+    if len(data) < 13 or data[0] >> 6 != 2:
+        return None
+    offset = 12 + 4 * (data[0] & 0x0F)
+    if data[0] & 0x10:
+        if len(data) < offset + 4:
+            return None
+        offset += 4 + 4 * int.from_bytes(data[offset + 2 : offset + 4], "big")
+    if data[0] & 0x20:
+        padding = data[-1]
+        if padding == 0 or padding > len(data) - offset:
+            return None
+        payload = data[offset:-padding]
+    else:
+        payload = data[offset:]
+    if not payload:
+        return None
+    timestamp = int.from_bytes(data[4:8], "big")
+    sequence = int.from_bytes(data[2:4], "big")
+    marker = bool(data[1] & 0x80)
+    codec = codec.upper()
+    if codec == "H265":
+        if len(payload) < 2:
+            return None
+        nal_type = (payload[0] >> 1) & 0x3F
+        if nal_type == 49:
+            if len(payload) < 3:
+                return None
+            fu_type = payload[2] & 0x3F
+            return _VideoPacketInfo(
+                timestamp,
+                sequence,
+                marker,
+                fu_type in H265_IRAP_TYPES,
+                (bool(payload[2] & 0x80), bool(payload[2] & 0x40)),
+            )
+        if nal_type == 48:
+            offset = 2
+            keyframe = False
+            while offset < len(payload):
+                if offset + 2 > len(payload):
+                    return None
+                length = int.from_bytes(payload[offset : offset + 2], "big")
+                offset += 2
+                if length < 2 or offset + length > len(payload):
+                    return None
+                keyframe |= ((payload[offset] >> 1) & 0x3F) in H265_IRAP_TYPES
+                offset += length
+            return _VideoPacketInfo(timestamp, sequence, marker, keyframe)
+        return _VideoPacketInfo(
+            timestamp, sequence, marker, nal_type in H265_IRAP_TYPES
+        )
+    if codec == "H264":
+        nal_type = payload[0] & 0x1F
+        if nal_type == 28:
+            if len(payload) < 2:
+                return None
+            fu_type = payload[1] & 0x1F
+            return _VideoPacketInfo(
+                timestamp,
+                sequence,
+                marker,
+                fu_type == 5,
+                (bool(payload[1] & 0x80), bool(payload[1] & 0x40)),
+            )
+        if nal_type == 24:
+            offset = 1
+            keyframe = False
+            while offset < len(payload):
+                if offset + 2 > len(payload):
+                    return None
+                length = int.from_bytes(payload[offset : offset + 2], "big")
+                offset += 2
+                if length < 1 or offset + length > len(payload):
+                    return None
+                keyframe |= (payload[offset] & 0x1F) == 5
+                offset += length
+            return _VideoPacketInfo(timestamp, sequence, marker, keyframe)
+        return _VideoPacketInfo(timestamp, sequence, marker, nal_type == 5)
+    return None
+
+
+class _StartupGate:
+    """Bounded, downstream-local decoder startup state."""
+
+    def __init__(self, codec: str, packet_limit: int, audio_limit: int) -> None:
+        self.codec = codec
+        self.packet_limit = packet_limit
+        self.audio_limit = audio_limit
+        self.deadline = 0.0
+        self.active = False
+        self.candidate: list[EncodedMediaPacket] = []
+        self.candidate_timestamp: int | None = None
+        self.candidate_keyframe = False
+        self.fu_started = False
+        self.fu_complete = False
+        self.invalid = False
+        self.audio: deque[EncodedMediaPacket] = deque(maxlen=audio_limit)
+        self.packet_high_water = 0
+        self.audio_high_water = 0
+
+    def arm(self, deadline: float) -> None:
+        self.deadline = deadline
+        self.active = True
+        self.candidate.clear()
+        self.candidate_timestamp = None
+        self.candidate_keyframe = False
+        self.fu_started = False
+        self.fu_complete = False
+        self.invalid = False
+        self.audio.clear()
+
+    def stop(self) -> None:
+        self.active = False
+        self.candidate.clear()
+        self.audio.clear()
+
+    def add_audio(self, packet: EncodedMediaPacket) -> None:
+        self.audio.append(packet)
+        self.audio_high_water = max(self.audio_high_water, len(self.audio))
+
+    def add_video(
+        self, packet: EncodedMediaPacket
+    ) -> tuple[tuple[EncodedMediaPacket, ...], tuple[EncodedMediaPacket, ...]] | None:
+        info = _video_packet_info(self.codec, packet.data)
+        if info is None:
+            self.candidate.clear()
+            self.candidate_timestamp = None
+            self.invalid = True
+            return None
+        if info.timestamp != self.candidate_timestamp:
+            self.candidate = []
+            self.candidate_timestamp = info.timestamp
+            self.candidate_keyframe = False
+            self.fu_started = False
+            self.fu_complete = False
+            self.invalid = False
+        elif self.candidate:
+            previous = int.from_bytes(self.candidate[-1].data[2:4], "big")
+            if info.sequence != (previous + 1) & 0xFFFF:
+                self.invalid = True
+        if len(self.candidate) >= self.packet_limit:
+            self.candidate.clear()
+            self.invalid = True
+            return None
+        self.candidate.append(packet)
+        self.packet_high_water = max(self.packet_high_water, len(self.candidate))
+        if info.keyframe:
+            self.candidate_keyframe = True
+            if info.keyframe_fragment is not None:
+                start, end = info.keyframe_fragment
+                if start:
+                    self.fu_started = True
+                elif not self.fu_started:
+                    self.invalid = True
+                if end and self.fu_started:
+                    self.fu_complete = True
+        if not info.marker:
+            return None
+        fragmented = any(
+            (_video_packet_info(self.codec, item.data) or info).keyframe_fragment
+            is not None
+            and (_video_packet_info(self.codec, item.data) or info).keyframe
+            for item in self.candidate
+        )
+        usable = (
+            self.candidate_keyframe
+            and not self.invalid
+            and (not fragmented or (self.fu_started and self.fu_complete))
+        )
+        if not usable:
+            self.candidate.clear()
+            self.candidate_timestamp = None
+            return None
+        video = tuple(self.candidate)
+        first_arrival = video[0].arrival_time
+        audio = tuple(item for item in self.audio if item.arrival_time >= first_arrival)
+        self.stop()
+        return video, audio
 
 
 class _Playback(Protocol):
@@ -133,6 +332,9 @@ class RecordedOutput:
         host: str = LOOPBACK_HOST,
         port: int = 0,
         queue_capacity: int = DEFAULT_QUEUE_CAPACITY,
+        startup_timeout: float = STARTUP_TIMEOUT,
+        startup_packet_limit: int = STARTUP_PACKET_LIMIT,
+        startup_audio_packet_limit: int = STARTUP_AUDIO_PACKET_LIMIT,
     ) -> None:
         if not _is_loopback(host):
             raise ValueError("recorded output must bind to a loopback address")
@@ -140,8 +342,16 @@ class RecordedOutput:
         self._include_audio = include_audio
         self._host = host
         self._requested_port = port
+        if startup_timeout <= 0:
+            raise ValueError("startup_timeout must be positive")
+        if startup_packet_limit < 1 or startup_audio_packet_limit < 1:
+            raise ValueError("startup packet limits must be positive")
+        self._startup_timeout = startup_timeout
+        self._startup_packet_limit = startup_packet_limit
+        self._startup_audio_packet_limit = startup_audio_packet_limit
         self._queue = _OutboundQueue(queue_capacity)
         self._control_lock = threading.Lock()
+        self._pipeline_lock = threading.RLock()
         self._send_lock = threading.Lock()
         self._stop = threading.Event()
         self._upstream_enabled = threading.Event()
@@ -162,6 +372,8 @@ class RecordedOutput:
         self._subscription = None
         self._error: Exception | None = None
         self._paused = False
+        self._startup_gate: _StartupGate | None = None
+        self._startup_error: StartupTimeoutError | None = None
 
     @property
     def url(self) -> str:
@@ -201,6 +413,18 @@ class RecordedOutput:
             return self._error
         return self._fanout.error if self._fanout is not None else None
 
+    @property
+    def startup_error(self) -> StartupTimeoutError | None:
+        return self._startup_error
+
+    @property
+    def startup_packet_high_water(self) -> int:
+        return self._startup_gate.packet_high_water if self._startup_gate else 0
+
+    @property
+    def startup_audio_high_water(self) -> int:
+        return self._startup_gate.audio_high_water if self._startup_gate else 0
+
     def start(self) -> None:
         if self._server is not None:
             raise RuntimeError("recorded output is already started")
@@ -208,6 +432,13 @@ class RecordedOutput:
         self._tracks = self._selected_tracks(self._playback)
         self._configurations = track_configurations(self._tracks)
         self._cache = CodecConfigurationCache(self._tracks)
+        video = self._configurations.get("video")
+        if video is not None and video.codec.upper() in ("H264", "H265"):
+            self._startup_gate = _StartupGate(
+                video.codec,
+                self._startup_packet_limit,
+                self._startup_audio_packet_limit,
+            )
         self._mappers = {
             media_type: RtpContinuityMapper(
                 config.clock_rate, payload_type=config.payload_type
@@ -231,12 +462,16 @@ class RecordedOutput:
     def seek(self, seconds: float) -> None:
         with self._control_lock:
             self._playback.seek(seconds)
-            self._begin_discontinuity(time.monotonic())
+            self._begin_discontinuity(
+                time.monotonic(), gate=self._downstream_playing.is_set()
+            )
 
     def seek_relative(self, delta_seconds: float) -> None:
         with self._control_lock:
             self._playback.seek_relative(delta_seconds)
-            self._begin_discontinuity(time.monotonic())
+            self._begin_discontinuity(
+                time.monotonic(), gate=self._downstream_playing.is_set()
+            )
 
     def pause(self) -> None:
         with self._control_lock:
@@ -308,7 +543,9 @@ class RecordedOutput:
             outgoing = self._playback
             self._playback = incoming
             self._prepared = None
-            self._begin_discontinuity(started)
+            self._begin_discontinuity(
+                started, gate=self._downstream_playing.is_set()
+            )
             for packet in staged:
                 self._process_packet(packet)
         outgoing.close()
@@ -368,17 +605,21 @@ class RecordedOutput:
         thread.start()
         self._threads.append(thread)
 
-    def _begin_discontinuity(self, at: float) -> None:
-        for mapper in self._mappers.values():
-            mapper.discontinuity(at)
-        assert self._cache is not None
-        self._reinject_pending = {
-            media_type
-            for media_type in self._configurations
-            if self._cache.get(media_type) is not None
-        }
-        self._pending_rtcp.clear()
-        self._queue.clear()
+    def _begin_discontinuity(self, at: float, *, gate: bool = False) -> None:
+        with self._pipeline_lock:
+            for mapper in self._mappers.values():
+                mapper.discontinuity(at)
+            assert self._cache is not None
+            self._reinject_pending = {
+                media_type
+                for media_type in self._configurations
+                if self._cache.get(media_type) is not None
+            }
+            self._pending_rtcp.clear()
+            self._queue.clear()
+            if gate and self._startup_gate is not None:
+                self._startup_error = None
+                self._startup_gate.arm(at + self._startup_timeout)
 
     def _process_loop(self) -> None:
         assert self._subscription is not None
@@ -388,6 +629,36 @@ class RecordedOutput:
                 self._process_packet(packet)
 
     def _process_packet(self, packet: EncodedMediaPacket) -> None:
+        with self._pipeline_lock:
+            self._process_packet_locked(packet)
+
+    def _process_packet_locked(
+        self, packet: EncodedMediaPacket, *, startup_release: bool = False
+    ) -> None:
+        gate = self._startup_gate
+        if gate is not None and gate.active:
+            if packet.packet_type != "rtp":
+                return
+            if packet.media_type == "audio":
+                gate.add_audio(packet)
+                return
+            if packet.media_type != "video":
+                return
+            ready = gate.add_video(packet)
+            if ready is None:
+                return
+            video, audio = ready
+            for item in video:
+                self._process_packet_locked(item, startup_release=True)
+            for item in audio:
+                self._process_packet_locked(item, startup_release=True)
+            return
+        if (
+            not startup_release
+            and self._server is not None
+            and not self._downstream_playing.is_set()
+        ):
+            return
         mapper = self._mappers.get(packet.media_type)
         if mapper is None:
             return
@@ -462,7 +733,9 @@ class RecordedOutput:
             connection.settimeout(0.2)
             try:
                 self._client_loop(connection)
-            except (OSError, RuntimeError) as exc:
+            except OSError:
+                pass
+            except RuntimeError as exc:
                 if not self._stop.is_set():
                     self._error = exc
             finally:
@@ -517,12 +790,16 @@ class RecordedOutput:
             elif method == "PLAY":
                 if self._paused:
                     self.resume()
-                self._downstream_playing.set()
+                self._begin_discontinuity(time.monotonic(), gate=True)
                 self._send_response(
                     connection, 200, cseq, (("Session", self._session),)
                 )
+                self._downstream_playing.set()
             elif method == "PAUSE":
                 self._downstream_playing.clear()
+                if self._startup_gate is not None:
+                    with self._pipeline_lock:
+                        self._startup_gate.stop()
                 self.pause()
                 self._send_response(
                     connection, 200, cseq, (("Session", self._session),)
@@ -549,6 +826,9 @@ class RecordedOutput:
 
     def _sender_loop(self) -> None:
         while not self._stop.is_set():
+            self._expire_startup()
+            if not self._downstream_playing.wait(0.1):
+                continue
             packet = self._queue.get(0.1)
             if packet is None or not self._downstream_playing.is_set():
                 continue
@@ -560,10 +840,28 @@ class RecordedOutput:
             try:
                 with self._send_lock:
                     connection.sendall(frame + packet.data)
-            except OSError as exc:
-                if not self._stop.is_set():
-                    self._error = exc
+            except OSError:
                 self._downstream_playing.clear()
+
+    def _expire_startup(self) -> None:
+        gate = self._startup_gate
+        if gate is None or not gate.active or time.monotonic() < gate.deadline:
+            return
+        with self._pipeline_lock:
+            if not gate.active or time.monotonic() < gate.deadline:
+                return
+            gate.stop()
+            self._startup_error = StartupTimeoutError(
+                "downstream startup timed out waiting for a complete keyframe "
+                "access unit"
+            )
+            self._downstream_playing.clear()
+            connection = self._client
+            if connection is not None:
+                try:
+                    connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
 
 
 def build_sdp(tracks: tuple[MediaTrack, ...], duration: float | None) -> str:

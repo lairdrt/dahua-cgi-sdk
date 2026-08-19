@@ -8,7 +8,9 @@ from dahua_rpc import EncodedMediaPacket, MediaTrack
 from dahua_rpc._recorded_bridge import (
     OutboundPacket,
     RecordedOutput,
+    StartupTimeoutError,
     _OutboundQueue,
+    _StartupGate,
     build_sdp,
 )
 from dahua_rpc._rtp_continuity import (
@@ -193,6 +195,136 @@ class CodecInitializationTests(TestCase):
 
 
 class PreparedTransitionTests(TestCase):
+    def test_seek_gates_inter_frames_until_complete_h265_irap(self) -> None:
+        tracks = (_h265_track(),)
+        playback = _FakePlayback(tracks, [])
+        bridge = _configured_bridge(tracks, playback)
+        bridge._downstream_playing.set()
+        bridge._mappers["video"].next_sequence = 10
+        bridge._process_packet(
+            _packet("video", 1, 9000, 1, 1.0, b"\x02\x01before")
+        )
+        before = bridge._queue.get(0)
+        assert before is not None
+
+        bridge.seek(10.0)
+        for sequence in range(2, 102):
+            bridge._process_packet(_packet(
+                "video", sequence, 18000, 2, 2.0, b"\x02\x01inter"
+            ))
+        self.assertIsNone(bridge._queue.get(0))
+        bridge._process_packet(_packet(
+            "video", 102, 27000, 2, 3.0,
+            b"\x62\x01\x93irap-a", marker=False,
+        ))
+        bridge._process_packet(_packet(
+            "video", 103, 27000, 2, 3.01, b"\x62\x01\x53irap-b"
+        ))
+
+        queued = _drain_queue(bridge)
+        rtp = [item.data for item in queued if item.packet_type == "rtp"]
+        self.assertEqual(
+            [item[12:] for item in rtp],
+            [
+                b"\x40\x01", b"\x42\x01", b"\x44\x01",
+                b"\x62\x01\x93irap-a", b"\x62\x01\x53irap-b",
+            ],
+        )
+        self.assertEqual([_sequence(item) for item in rtp], [11, 12, 13, 14, 15])
+        self.assertEqual(len({_timestamp(item) for item in rtp}), 1)
+        self.assertEqual(_ssrc(rtp[-1]), _ssrc(before.data))
+        sender_reports = [
+            item.data for item in queued
+            if item.packet_type == "rtcp" and item.data[1] == 200
+        ]
+        self.assertEqual(len(sender_reports), 1)
+        self.assertEqual(
+            int.from_bytes(sender_reports[0][16:20], "big"),
+            _timestamp(rtp[-1]),
+        )
+        self.assertTrue(bridge._downstream_playing.is_set())
+
+    def test_seek_audio_hold_and_timeout_are_bounded(self) -> None:
+        tracks = (
+            _h265_track(),
+            MediaTrack(
+                "audio", "a", "AAC", 97, 8000, None, (), "recvonly"
+            ),
+        )
+        playback = _FakePlayback(tracks, [])
+        bridge = _configured_bridge(tracks, playback)
+        bridge._downstream_playing.set()
+
+        bridge.seek(10.0)
+        for sequence in range(300):
+            bridge._process_packet(_packet(
+                "audio", sequence, sequence * 160, 2, 2.0 + sequence / 100
+            ))
+        self.assertEqual(bridge.startup_audio_high_water, 256)
+        self.assertIsNone(bridge._queue.get(0))
+        bridge._process_packet(_packet(
+            "video", 1, 27000, 3, 3.0, b"\x26\x01irap"
+        ))
+        queued = _drain_queue(bridge)
+        self.assertLessEqual(
+            sum(item.media_type == "audio" for item in queued), 256
+        )
+
+        bridge.seek(20.0)
+        assert bridge._startup_gate is not None
+        bridge._startup_gate.deadline = 0.0
+        bridge._expire_startup()
+        self.assertIsInstance(bridge.startup_error, StartupTimeoutError)
+        self.assertFalse(bridge._downstream_playing.is_set())
+        self.assertFalse(bridge._startup_gate.active)
+
+    def test_prepared_handoff_gates_incoming_inter_frames(self) -> None:
+        tracks = (_h265_track(),)
+        outgoing = _FakePlayback(tracks, [])
+        bridge = _configured_bridge(tracks, outgoing)
+        bridge._downstream_playing.set()
+        bridge._mappers["video"].next_sequence = 20
+        bridge._process_packet(
+            _packet("video", 1, 9000, 1, 1.0, b"\x02\x01before")
+        )
+        before = bridge._queue.get(0)
+        assert before is not None
+        incoming_packets = [
+            _packet("video", value, 18000, 2, 2.0, b"\x02\x01inter")
+            for value in range(100, 200)
+        ]
+        incoming_packets.extend((
+            _packet(
+                "video", 200, 27000, 2, 3.0,
+                b"\x62\x01\x93irap-a", marker=False,
+            ),
+            _packet(
+                "video", 201, 27000, 2, 3.01,
+                b"\x62\x01\x53irap-b",
+            ),
+        ))
+        incoming = _FakePlayback(tracks, [incoming_packets])
+        boundary = datetime(2026, 8, 17, tzinfo=timezone.utc)
+        bridge.prepare(
+            incoming, target_time=boundary, recording_start=boundary
+        )
+
+        bridge.activate_prepared()
+
+        queued = _drain_queue(bridge)
+        rtp = [item.data for item in queued if item.packet_type == "rtp"]
+        self.assertEqual(
+            [item[12:] for item in rtp],
+            [
+                b"\x40\x01", b"\x42\x01", b"\x44\x01",
+                b"\x62\x01\x93irap-a", b"\x62\x01\x53irap-b",
+            ],
+        )
+        self.assertEqual([_sequence(item) for item in rtp], [21, 22, 23, 24, 25])
+        self.assertEqual(len({_timestamp(item) for item in rtp}), 1)
+        self.assertEqual(_ssrc(rtp[-1]), _ssrc(before.data))
+        self.assertTrue(bridge._downstream_playing.is_set())
+
     def test_dual_track_boundary_keeps_identity_and_continuity(self) -> None:
         tracks = _tracks_with_initialization()
         outgoing = _FakePlayback(tracks, [])
@@ -355,6 +487,170 @@ class ServerLifecycleTests(TestCase):
         self.assertTrue(playback.closed)
         self.assertTrue(all(not thread.is_alive() for thread in output._threads))
 
+    def test_late_h265_client_receives_initialization_before_current_media(
+        self,
+    ) -> None:
+        tracks = (
+            _video_track(
+                "H265",
+                98,
+                ("98 sprop-vps=QAE=;sprop-sps=QgE=;sprop-pps=RAE=",),
+            ),
+        )
+        playback = _FakePlayback(
+            tracks, [[_packet("video", 1, 9000, 1, 1.0, b"early")]]
+        )
+        output = RecordedOutput(playback)
+        output.start()
+        try:
+            _wait_for(lambda: not playback.batches)
+            with socket.create_connection((output.host, output.port)) as client:
+                client.settimeout(1.0)
+                self.assertIn(
+                    b"RTSP/1.0 200",
+                    _rtsp_request(client, "DESCRIBE", output.url, 1),
+                )
+                self.assertIn(
+                    b"RTSP/1.0 200",
+                    _rtsp_request(
+                        client,
+                        "SETUP",
+                        f"{output.url}/trackID=video",
+                        2,
+                        "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n",
+                    ),
+                )
+                self.assertIn(
+                    b"RTSP/1.0 200",
+                    _rtsp_request(
+                        client,
+                        "PLAY",
+                        output.url,
+                        3,
+                        f"Session: {output.session}\r\n",
+                    ),
+                )
+                playback.batches.append([
+                    _packet("video", 2, 18000, 1, 2.0, b"\x02\x01inter"),
+                    _packet(
+                        "video", 3, 27000, 1, 3.0,
+                        b"\x62\x01\x93irap-a", marker=False,
+                    ),
+                    _packet(
+                        "video", 4, 27000, 1, 3.01,
+                        b"\x62\x01\x53irap-b",
+                    ),
+                ])
+                payloads = []
+                packets = []
+                while len(payloads) < 5:
+                    channel, data = _interleaved_frame(client)
+                    if channel == 0:
+                        payloads.append(data[12:])
+                        packets.append(data)
+
+            self.assertEqual(
+                payloads,
+                [
+                    b"\x40\x01", b"\x42\x01", b"\x44\x01",
+                    b"\x62\x01\x93irap-a", b"\x62\x01\x53irap-b",
+                ],
+            )
+            self.assertEqual(
+                [_sequence(item) for item in packets],
+                list(range(_sequence(packets[0]), _sequence(packets[0]) + 5)),
+            )
+            self.assertEqual(len({_timestamp(item) for item in packets}), 1)
+            self.assertLessEqual(output.startup_packet_high_water, 2048)
+        finally:
+            output.close()
+
+    def test_startup_timeout_disconnects_without_stalling_upstream(self) -> None:
+        tracks = (
+            _video_track(
+                "H265", 98,
+                ("98 sprop-vps=QAE=;sprop-sps=QgE=;sprop-pps=RAE=",),
+            ),
+        )
+        playback = _FakePlayback(tracks, [])
+        output = RecordedOutput(playback, startup_timeout=0.05)
+        output.start()
+        try:
+            with socket.create_connection((output.host, output.port)) as client:
+                client.settimeout(1.0)
+                _rtsp_request(client, "DESCRIBE", output.url, 1)
+                _rtsp_request(
+                    client, "SETUP", f"{output.url}/trackID=video", 2,
+                    "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n",
+                )
+                _rtsp_request(
+                    client, "PLAY", output.url, 3,
+                    f"Session: {output.session}\r\n",
+                )
+                self.assertEqual(client.recv(1), b"")
+            self.assertIsInstance(output.startup_error, StartupTimeoutError)
+            self.assertTrue(output._upstream_enabled.is_set())
+            self.assertIsNone(output.error)
+        finally:
+            output.close()
+
+
+class StartupGateTests(TestCase):
+    def test_h265_discards_inter_au_and_requires_complete_fragmented_irap(
+        self,
+    ) -> None:
+        gate = _StartupGate("h265", 4, 2)
+        gate.arm(time.monotonic() + 1)
+        self.assertIsNone(gate.add_video(
+            _packet("video", 1, 100, 1, 1.0, b"\x02\x01inter")
+        ))
+        self.assertIsNone(gate.add_video(_packet(
+            "video", 2, 200, 1, 2.0, b"\x62\x01\x93a", marker=False
+        )))
+        ready = gate.add_video(_packet(
+            "video", 3, 200, 1, 2.1, b"\x62\x01\x53b"
+        ))
+        self.assertIsNotNone(ready)
+        video, _ = ready or ((), ())
+        self.assertEqual([item.sequence_number for item in video], [2, 3])
+
+    def test_h264_idr_uses_same_gate(self) -> None:
+        gate = _StartupGate("h264", 4, 2)
+        gate.arm(time.monotonic() + 1)
+        ready = gate.add_video(
+            _packet("video", 1, 100, 1, 1.0, b"\x65idr")
+        )
+        self.assertIsNotNone(ready)
+
+    def test_candidate_and_audio_buffers_are_bounded(self) -> None:
+        gate = _StartupGate("h265", 2, 2)
+        gate.arm(time.monotonic() + 1)
+        for sequence in range(1, 5):
+            gate.add_audio(_packet("audio", sequence, sequence, 2, sequence))
+        gate.add_video(_packet(
+            "video", 1, 100, 1, 1.0, b"\x62\x01\x93a", marker=False
+        ))
+        gate.add_video(_packet(
+            "video", 2, 100, 1, 1.1, b"\x62\x01\x13b", marker=False
+        ))
+        self.assertIsNone(gate.add_video(_packet(
+            "video", 3, 100, 1, 1.2, b"\x62\x01\x53c"
+        )))
+        self.assertEqual(gate.audio_high_water, 2)
+        self.assertEqual(gate.packet_high_water, 2)
+
+    def test_audio_before_keyframe_is_not_released(self) -> None:
+        gate = _StartupGate("h265", 4, 4)
+        gate.arm(time.monotonic() + 1)
+        gate.add_audio(_packet("audio", 1, 10, 2, 1.0))
+        gate.add_audio(_packet("audio", 2, 20, 2, 2.1))
+        ready = gate.add_video(
+            _packet("video", 3, 100, 1, 2.0, b"\x26\x01irap")
+        )
+        self.assertIsNotNone(ready)
+        _, audio = ready or ((), ())
+        self.assertEqual([item.sequence_number for item in audio], [2])
+
     def test_prepared_session_can_be_aborted(self) -> None:
         output = _configured_bridge(_tracks())
         prepared = _FakePlayback(_tracks(), [])
@@ -385,13 +681,15 @@ def _packet(
     timestamp: int,
     ssrc: int,
     arrival: float,
+    payload: bytes = b"payload",
+    marker: bool = True,
 ) -> EncodedMediaPacket:
     data = (
-        b"\x80\x62"
+        b"\x80" + bytes((0x62 | (0x80 if marker else 0),))
         + sequence.to_bytes(2, "big")
         + timestamp.to_bytes(4, "big")
         + ssrc.to_bytes(4, "big")
-        + b"payload"
+        + payload
     )
     return EncodedMediaPacket(
         media_type=media_type,
@@ -400,7 +698,7 @@ def _packet(
         arrival_time=arrival,
         data=data,
         payload_type=98 if media_type == "video" else 97,
-        marker=False,
+        marker=marker,
         sequence_number=sequence,
         rtp_timestamp=timestamp,
         ssrc=ssrc,
@@ -432,6 +730,13 @@ def _video_track(
     )
 
 
+def _h265_track() -> MediaTrack:
+    return _video_track(
+        "H265", 98,
+        ("98 sprop-vps=QAE=;sprop-sps=QgE=;sprop-pps=RAE=",),
+    )
+
+
 def _b64(value: bytes) -> str:
     return base64.b64encode(value).decode()
 
@@ -446,6 +751,9 @@ def _configured_bridge(
     bridge._tracks = tracks
     bridge._configurations = track_configurations(tracks)
     bridge._cache = CodecConfigurationCache(tracks)
+    video = bridge._configurations.get("video")
+    if video is not None and video.codec.upper() in ("H264", "H265"):
+        bridge._startup_gate = _StartupGate(video.codec, 2048, 256)
     bridge._mappers = {
         track.media_type: RtpContinuityMapper(
             track.clock_rate or 1,
@@ -455,6 +763,13 @@ def _configured_bridge(
         for index, track in enumerate(tracks, start=1)
     }
     return bridge
+
+
+def _drain_queue(bridge: RecordedOutput) -> list[OutboundPacket]:
+    packets = []
+    while (packet := bridge._queue.get(0)) is not None:
+        packets.append(packet)
+    return packets
 
 
 class _FakePlayback:
@@ -529,3 +844,44 @@ def _wait_for(predicate: object) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("condition was not reached")
+
+
+def _rtsp_request(
+    client: socket.socket,
+    method: str,
+    target: str,
+    cseq: int,
+    headers: str = "",
+) -> bytes:
+    client.sendall(
+        f"{method} {target} RTSP/1.0\r\nCSeq: {cseq}\r\n{headers}\r\n".encode()
+    )
+    response = bytearray()
+    while b"\r\n\r\n" not in response:
+        response.extend(client.recv(4096))
+    header, body = bytes(response).split(b"\r\n\r\n", 1)
+    content_length = 0
+    for line in header.split(b"\r\n")[1:]:
+        name, _, value = line.partition(b":")
+        if name.lower() == b"content-length":
+            content_length = int(value.strip())
+    if len(body) < content_length:
+        body += _recv_exact(client, content_length - len(body))
+    return header + b"\r\n\r\n" + body
+
+
+def _interleaved_frame(client: socket.socket) -> tuple[int, bytes]:
+    header = _recv_exact(client, 4)
+    if header[0] != 0x24:
+        raise AssertionError("expected an interleaved RTP/RTCP frame")
+    return header[1], _recv_exact(client, int.from_bytes(header[2:4], "big"))
+
+
+def _recv_exact(client: socket.socket, length: int) -> bytes:
+    data = bytearray()
+    while len(data) < length:
+        chunk = client.recv(length - len(data))
+        if not chunk:
+            raise AssertionError("RTSP client disconnected")
+        data.extend(chunk)
+    return bytes(data)
